@@ -21,9 +21,9 @@ use crate::proof_api::{
     Sha512MessageInstance, Sha512ProofSettings, Sha512SingleBlockInstance,
     deserialize_message_instance, deserialize_multi_block_proof, deserialize_single_block_instance,
     deserialize_single_block_proof, prove_message, prove_message_with_settings, prove_single_block,
-    serialize_message_instance, serialize_multi_block_proof, serialize_single_block_instance,
-    serialize_single_block_proof, verify_message_proof, verify_message_proof_with_settings,
-    verify_single_block_proof,
+    prove_single_block_with_settings, serialize_message_instance, serialize_multi_block_proof,
+    serialize_single_block_instance, serialize_single_block_proof, verify_message_proof,
+    verify_message_proof_with_settings, verify_single_block_proof,
 };
 use crate::sha512::Sha512Circuit;
 
@@ -252,6 +252,29 @@ fn deserialize_message_instance_rejects_oversized_declared_length() {
     bytes[64..72].copy_from_slice(&u64::MAX.to_be_bytes());
     let err = deserialize_message_instance(&bytes).expect_err("should fail");
     assert!(err.contains("exceeds configured size limit"));
+}
+
+#[test]
+fn prove_rejects_settings_below_minimum_policy() {
+    let block_instance = Sha512SingleBlockInstance {
+        initial_state: INITIAL_STATE,
+        block: [0_u8; 128],
+    };
+    let message_instance = Sha512MessageInstance {
+        initial_state: INITIAL_STATE,
+        message: b"abc".to_vec(),
+    };
+    let weak = Sha512ProofSettings {
+        log_blowup: 2,
+        log_final_poly_len: 3,
+        num_queries: 1,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 0,
+        rng_seed: 1,
+    };
+
+    assert!(prove_single_block_with_settings(block_instance, weak).is_err());
+    assert!(prove_message_with_settings(&message_instance, weak).is_err());
 }
 
 #[test]
