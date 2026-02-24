@@ -513,6 +513,10 @@ pub fn deserialize_single_block_instance(
 /// * 8 bytes     — message length as a big-endian `u64`.
 /// * N bytes     — message bytes verbatim.
 pub fn serialize_message_instance(instance: &Sha512MessageInstance) -> Vec<u8> {
+    assert!(
+        instance.message.len() <= MAX_MESSAGE_INSTANCE_BYTES,
+        "message instance exceeds configured size limit"
+    );
     let mut bytes = Vec::with_capacity(64 + 8 + instance.message.len());
     for word in instance.initial_state {
         bytes.extend_from_slice(&word.to_be_bytes());
@@ -567,12 +571,22 @@ pub fn deserialize_message_instance(bytes: &[u8]) -> Result<Sha512MessageInstanc
 pub fn serialize_single_block_proof(proof: &Sha512SingleBlockProof) -> Vec<u8> {
     let proof_bytes =
         bincode::serialize(&proof.proof).expect("single proof inner serialization should succeed");
+    assert!(
+        proof_bytes.len() <= MAX_INNER_PROOF_BYTES,
+        "inner single-block proof exceeds configured size limit"
+    );
     let serializable = SerializableSingleBlockProof {
         proof_bytes,
         vk: to_serializable_vk(&proof.preprocessed_vk),
         settings: proof.settings,
     };
-    bincode::serialize(&serializable).expect("single block proof serialization should succeed")
+    let bytes =
+        bincode::serialize(&serializable).expect("single block proof serialization should succeed");
+    assert!(
+        bytes.len() <= MAX_SINGLE_PROOF_BYTES,
+        "serialized single-block proof exceeds configured size limit"
+    );
+    bytes
 }
 
 /// Deserialises a [`Sha512SingleBlockProof`] from bytes produced by
@@ -625,22 +639,40 @@ pub fn deserialize_single_block_proof(bytes: &[u8]) -> Result<Sha512SingleBlockP
 ///
 /// Panics if bincode serialisation fails.
 pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
-    let serializable = SerializableMultiBlockProof {
-        block_proofs: proof
-            .block_proofs
-            .iter()
-            .map(|p| SerializableSingleBlockProof {
-                proof_bytes: bincode::serialize(&p.proof)
-                    .expect("single proof inner serialization should succeed"),
+    assert!(
+        proof.block_proofs.len() <= MAX_MULTI_BLOCK_PROOFS,
+        "too many block proofs in serialized multi-block proof"
+    );
+    let block_proofs: Vec<SerializableSingleBlockProof> = proof
+        .block_proofs
+        .iter()
+        .map(|p| {
+            let proof_bytes = bincode::serialize(&p.proof)
+                .expect("single proof inner serialization should succeed");
+            assert!(
+                proof_bytes.len() <= MAX_INNER_PROOF_BYTES,
+                "inner block proof exceeds configured size limit"
+            );
+            SerializableSingleBlockProof {
+                proof_bytes,
                 vk: to_serializable_vk(&p.preprocessed_vk),
                 settings: p.settings,
-            })
-            .collect(),
+            }
+        })
+        .collect();
+    let serializable = SerializableMultiBlockProof {
+        block_proofs,
         final_state: proof.final_state,
         digest: proof.digest.to_vec(),
         settings: proof.settings,
     };
-    bincode::serialize(&serializable).expect("multi block proof serialization should succeed")
+    let bytes =
+        bincode::serialize(&serializable).expect("multi block proof serialization should succeed");
+    assert!(
+        bytes.len() <= MAX_MULTI_PROOF_BYTES,
+        "serialized multi-block proof exceeds configured size limit"
+    );
+    bytes
 }
 
 /// Deserialises a [`Sha512MultiBlockProof`] from bytes produced by

@@ -120,10 +120,26 @@ where
             .expect("window has local preprocessed row");
 
         builder.assert_eq(local[WORD_K].clone(), local_prep[WORD_K].clone());
+        for limb in 0..LIMBS_PER_WORD {
+            // Bind K exactly as a 64-bit value, not just modulo the base field.
+            builder.assert_zero(
+                local_prep[PREP_ROUND_SELECTOR_COL].clone()
+                    * (local[limb_col(WORD_K, limb)].clone()
+                        - local_prep[limb_col(WORD_K, limb)].clone()),
+            );
+        }
         builder.assert_zero(
             local_prep[PREP_INIT_W_SELECTOR_COL].clone()
                 * (local[WORD_W].clone() - local_prep[WORD_W].clone()),
         );
+        for limb in 0..LIMBS_PER_WORD {
+            // Bind W[0..15] exactly as 64-bit words from the instance.
+            builder.assert_zero(
+                local_prep[PREP_INIT_W_SELECTOR_COL].clone()
+                    * (local[limb_col(WORD_W, limb)].clone()
+                        - local_prep[limb_col(WORD_W, limb)].clone()),
+            );
+        }
         builder.assert_zero(
             (AB::Expr::ONE - local_prep[PREP_ROUND_SELECTOR_COL].clone()) * local[WORD_W].clone(),
         );
@@ -132,6 +148,14 @@ where
             builder
                 .when_first_row()
                 .assert_eq(local[col].clone(), local_prep[col].clone());
+        }
+        for word in WORD_A..=WORD_H {
+            for limb in 0..LIMBS_PER_WORD {
+                builder.when_first_row().assert_eq(
+                    local[limb_col(word, limb)].clone(),
+                    local_prep[limb_col(word, limb)].clone(),
+                );
+            }
         }
 
         let public: [AB::PublicVar; 8] = core::array::from_fn(|i| builder.public_values()[i]);
@@ -419,18 +443,22 @@ impl Sha512Circuit {
             let dst = &mut values[row * AIR_WIDTH..(row + 1) * AIR_WIDTH];
             dst[WORD_W] = src[WORD_W];
             dst[WORD_K] = src[WORD_K];
+            for limb in 0..LIMBS_PER_WORD {
+                dst[limb_col(WORD_W, limb)] = src[limb_col(WORD_W, limb)];
+                dst[limb_col(WORD_K, limb)] = src[limb_col(WORD_K, limb)];
+            }
             dst[PREP_ROUND_SELECTOR_COL] = BabyBear::from_bool(row < 80);
             dst[PREP_INIT_W_SELECTOR_COL] = BabyBear::from_bool(row < 16);
             dst[PREP_SCHEDULE_SELECTOR_COL] = BabyBear::from_bool((16..80).contains(&row));
             dst[PREP_FINAL_SELECTOR_COL] = BabyBear::from_bool(row == 80);
-            dst[WORD_A] = bb(initial_state[0]);
-            dst[WORD_B] = bb(initial_state[1]);
-            dst[WORD_C] = bb(initial_state[2]);
-            dst[WORD_D] = bb(initial_state[3]);
-            dst[WORD_E] = bb(initial_state[4]);
-            dst[WORD_F] = bb(initial_state[5]);
-            dst[WORD_G] = bb(initial_state[6]);
-            dst[WORD_H] = bb(initial_state[7]);
+            for (offset, value) in initial_state.iter().copied().enumerate() {
+                let word = WORD_A + offset;
+                dst[word] = bb(value);
+                for limb in 0..LIMBS_PER_WORD {
+                    let limb_value = ((value >> (16 * limb)) & 0xffff) as u16;
+                    dst[limb_col(word, limb)] = BabyBear::from_u16(limb_value);
+                }
+            }
         }
 
         RowMajorMatrix::new(values, AIR_WIDTH)
