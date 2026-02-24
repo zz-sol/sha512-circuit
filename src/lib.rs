@@ -121,3 +121,7 @@ pub use trace::BlockTrace;
 mod proof_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "logup-experimental"))]
+mod tests_logup_experimental;
+#[cfg(all(test, feature = "logup-experimental"))]
+mod tests_logup_sha_range;

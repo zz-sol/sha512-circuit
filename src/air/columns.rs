@@ -307,3 +307,9 @@ pub(crate) const SCHED_CARRY_BASE_FOR_TESTS: usize = SCHED_CARRY_BASE;
 pub(crate) const RANGE_BIT_BASE_FOR_TESTS: usize = RANGE_BIT_BASE;
 #[cfg(test)]
 pub(crate) const RANGE_BITS_PER_SOURCE_FOR_TESTS: usize = RANGE_BITS_PER_SOURCE;
+#[cfg(all(test, feature = "logup-experimental"))]
+pub(crate) const RANGE_SOURCES_FOR_TESTS: usize = RANGE_SOURCES;
+#[cfg(all(test, feature = "logup-experimental"))]
+pub(crate) fn range_source_col_for_tests(source: usize) -> usize {
+    range_source_col(source)
+}

@@ -20,5 +20,40 @@ rand = { version = "0.9", features = ["small_rng"] }
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3"
 
+# Experimental logup path (Plonky3 mainline).
+p3-air-git = { package = "p3-air", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-baby-bear-git = { package = "p3-baby-bear", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-batch-stark-git = { package = "p3-batch-stark", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-challenger-git = { package = "p3-challenger", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-commit-git = { package = "p3-commit", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-dft-git = { package = "p3-dft", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-field-git = { package = "p3-field", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-fri-git = { package = "p3-fri", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-keccak-git = { package = "p3-keccak", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-lookup-git = { package = "p3-lookup", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-matrix-git = { package = "p3-matrix", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-merkle-tree-git = { package = "p3-merkle-tree", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-symmetric-git = { package = "p3-symmetric", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+p3-uni-stark-git = { package = "p3-uni-stark", git = "https://github.com/Plonky3/Plonky3.git", rev = "3c360ce01b3ecb52d8a75500f13064d55567937c", optional = true }
+
 [dev-dependencies]
 sha2 = "0.10"
+
+[features]
+default = []
+logup-experimental = [
+    "dep:p3-air-git",
+    "dep:p3-baby-bear-git",
+    "dep:p3-batch-stark-git",
+    "dep:p3-challenger-git",
+    "dep:p3-commit-git",
+    "dep:p3-dft-git",
+    "dep:p3-field-git",
+    "dep:p3-fri-git",
+    "dep:p3-keccak-git",
+    "dep:p3-lookup-git",
+    "dep:p3-matrix-git",
+    "dep:p3-merkle-tree-git",
+    "dep:p3-symmetric-git",
+    "dep:p3-uni-stark-git",
+]
