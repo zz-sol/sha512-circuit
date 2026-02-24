@@ -86,85 +86,92 @@ fn setup_config() -> Config {
 }
 
 fn main() {
-    let message: Vec<u8> = (0..256).map(|i| ((i * 17 + 23) & 0xff) as u8).collect();
-    let public_input = PublicInput {
-        prefix8: message[..8].try_into().expect("prefix length"),
-        digest: Sha512Circuit::hash(&message),
-    };
-
     let config = setup_config();
-    let blocks = Sha512Circuit::padded_blocks(&message);
+    let sizes = [32_usize, 64, 128, 256, 512, 1024];
 
-    let prove_start = Instant::now();
-    let mut state = SHA512_IV;
-    let mut proofs: Vec<StarkProof> = Vec::with_capacity(blocks.len());
-    let mut vks: Vec<PreVk> = Vec::with_capacity(blocks.len());
-    let mut total_circuit_size = 0_usize;
-    let mut total_proof_size = 0_usize;
+    println!(
+        "{:<10} {:>16} {:>20} {:>16} {:>16}",
+        "input", "proving(ms)", "verification(ms)", "circuit size", "proof size"
+    );
+    println!("{}", "-".repeat(84));
 
-    for block in &blocks {
-        let trace = Sha512Circuit::compress_block(&state, block);
-        let main_trace = Sha512Circuit::build_plonky3_air_trace(&trace);
-        let preprocessed =
-            Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, block);
-        let air = Sha512RoundAir::new(preprocessed);
-        let (prover_data, vk) =
-            setup_preprocessed::<Config, _>(&config, &air, 7).expect("has preprocessed");
+    for size in sizes {
+        let message: Vec<u8> = (0..size).map(|i| ((i * 17 + 23) & 0xff) as u8).collect();
+        let public_input = PublicInput {
+            prefix8: message[..8].try_into().expect("prefix length"),
+            digest: Sha512Circuit::hash(&message),
+        };
+        let blocks = Sha512Circuit::padded_blocks(&message);
 
-        let public_values = trace.round_states[80].map(BabyBear::from_u64);
-        let proof = prove_with_preprocessed(
-            &config,
-            &air,
-            main_trace.clone(),
-            &public_values,
-            Some(&prover_data),
+        let prove_start = Instant::now();
+        let mut state = SHA512_IV;
+        let mut proofs: Vec<StarkProof> = Vec::with_capacity(blocks.len());
+        let mut vks: Vec<PreVk> = Vec::with_capacity(blocks.len());
+        let mut total_circuit_size = 0_usize;
+        let mut total_proof_size = 0_usize;
+
+        for block in &blocks {
+            let trace = Sha512Circuit::compress_block(&state, block);
+            let main_trace = Sha512Circuit::build_plonky3_air_trace(&trace);
+            let preprocessed =
+                Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, block);
+            let air = Sha512RoundAir::new(preprocessed);
+            let (prover_data, vk) =
+                setup_preprocessed::<Config, _>(&config, &air, 7).expect("has preprocessed");
+
+            let public_values = trace.round_states[80].map(BabyBear::from_u64);
+            let proof = prove_with_preprocessed(
+                &config,
+                &air,
+                main_trace.clone(),
+                &public_values,
+                Some(&prover_data),
+            );
+
+            total_circuit_size += main_trace.width() * main_trace.height();
+            total_proof_size += bincode::serialize(&proof).expect("serialize proof").len();
+
+            proofs.push(proof);
+            vks.push(vk);
+            state = trace.output_state;
+        }
+        let proving_time = prove_start.elapsed();
+
+        let verify_start = Instant::now();
+
+        if public_input.prefix8 != message[..8] {
+            eprintln!("public prefix mismatch");
+            std::process::exit(1);
+        }
+
+        let mut verify_state = SHA512_IV;
+        for ((block, proof), vk) in blocks.iter().zip(&proofs).zip(&vks) {
+            let trace = Sha512Circuit::compress_block(&verify_state, block);
+            let preprocessed =
+                Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&verify_state, block);
+            let air = Sha512RoundAir::new(preprocessed);
+            let public_values = trace.round_states[80].map(BabyBear::from_u64);
+
+            verify_with_preprocessed(&config, &air, proof, &public_values, Some(vk))
+                .expect("proof verification must succeed");
+            verify_state = trace.output_state;
+        }
+
+        let computed_digest = Sha512Circuit::state_to_digest(&verify_state);
+        if computed_digest != public_input.digest {
+            eprintln!("public digest mismatch");
+            std::process::exit(1);
+        }
+
+        let verification_time = verify_start.elapsed();
+
+        println!(
+            "{:<10} {:>16.3} {:>20.3} {:>16} {:>16}",
+            format!("{} B", size),
+            proving_time.as_secs_f64() * 1000.0,
+            verification_time.as_secs_f64() * 1000.0,
+            total_circuit_size,
+            format!("{} B", total_proof_size),
         );
-
-        total_circuit_size += main_trace.width() * main_trace.height();
-        total_proof_size += bincode::serialize(&proof).expect("serialize proof").len();
-
-        proofs.push(proof);
-        vks.push(vk);
-        state = trace.output_state;
     }
-    let proving_time = prove_start.elapsed();
-
-    let verify_start = Instant::now();
-
-    if public_input.prefix8 != message[..8] {
-        eprintln!("public prefix mismatch");
-        std::process::exit(1);
-    }
-
-    let mut verify_state = SHA512_IV;
-    for ((block, proof), vk) in blocks.iter().zip(&proofs).zip(&vks) {
-        let trace = Sha512Circuit::compress_block(&verify_state, block);
-        let preprocessed =
-            Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&verify_state, block);
-        let air = Sha512RoundAir::new(preprocessed);
-        let public_values = trace.round_states[80].map(BabyBear::from_u64);
-
-        verify_with_preprocessed(&config, &air, proof, &public_values, Some(vk))
-            .expect("proof verification must succeed");
-        verify_state = trace.output_state;
-    }
-
-    let computed_digest = Sha512Circuit::state_to_digest(&verify_state);
-    if computed_digest != public_input.digest {
-        eprintln!("public digest mismatch");
-        std::process::exit(1);
-    }
-
-    let verification_time = verify_start.elapsed();
-
-    println!(
-        "proving time: {:.3} ms",
-        proving_time.as_secs_f64() * 1000.0
-    );
-    println!(
-        "verification time: {:.3} ms",
-        verification_time.as_secs_f64() * 1000.0
-    );
-    println!("circuit size: {}", total_circuit_size);
-    println!("proof size: {} bytes", total_proof_size);
 }
