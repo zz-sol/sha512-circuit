@@ -9,7 +9,7 @@ The library proves that a SHA-512 compression was computed correctly, without re
 - **Field**: BabyBear (2^31 − 2^27 + 1)
 - **Polynomial commitment**: FRI over BabyBear with Keccak-256 Merkle trees
 - **Trace size**: 128 rows × 1076 columns per 128-byte block
-- **Proof size**: ~90–200 KB per block (varies with FRI parameters)
+- **Proof size**: single message proof; grows with trace height (not one proof per block)
 
 ## Usage
 
@@ -145,7 +145,7 @@ This addition is performed by the verifier (not inside the STARK). In the multi-
 
 - **Not audited.** This is a prototype and has not undergone a security review.
 - **Test-grade FRI parameters by default.** The current setup uses `create_test_fri_params` and only exposes `log_final_poly_len`/`rng_seed`; production use needs hardened FRI parameterization.
-- **No recursive proof composition.** Multi-block proofs are a flat list of independent single-block proofs; proof size scales linearly with the number of blocks.
+- **No recursive proof composition.** Multi-block uses one message-level STARK proof, but there is no recursive aggregation layer.
 - **Soundness depends on correct instance wiring by the caller.** The proof binds to `(initial_state, block)`; a caller that passes wrong instance values to the verifier will get incorrect results.
 
 ## CI

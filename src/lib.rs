@@ -23,7 +23,7 @@
 //! | Extension degree | 4 (binomial extension over BabyBear) |
 //! | Polynomial commitment | FRI over BabyBear with Keccak-256 Merkle trees |
 //! | Trace dimensions | 128 rows × 1076 columns per 128-byte block |
-//! | Proof size (typical) | 90–200 KB per block |
+//! | Proof size (typical) | ~90–100 KB for tested message sizes (single message proof) |
 //!
 //! ## Security notice
 //!

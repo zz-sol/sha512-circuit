@@ -80,7 +80,7 @@ pub(super) fn constrain_add_2_limbs_across_rows<AB: AirBuilder<F = BabyBear>>(
 pub(super) fn constrain_schedule_recurrence<B: AirBuilder<F = BabyBear>>(
     builder: &mut B,
     row: &[B::Var],
-    selector: B::Var,
+    selector: B::Expr,
 ) {
     let two16 = BabyBear::from_u32(1 << 16);
     let mut carry_in = B::Expr::ZERO;

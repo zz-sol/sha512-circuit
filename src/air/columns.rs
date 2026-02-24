@@ -24,9 +24,10 @@
 //! ├─ Carry bits ────────────────────────────────────────────────────────────────────────┤
 //! │  Minimal-width carry bit decompositions (T1=3 bits, T2/A/E=1 bit, sched=2 bits)   │
 //! ├─ Preprocessed columns (at the tail — shared with the preprocessed trace) ───────────┤
+//! │  PREP_BLOCK_START_SELECTOR_COL — 1 at block-start rows, 0 elsewhere                  │
+//! │  PREP_TRANSITION_SELECTOR_COL  — 1 where row-to-next transition is enforced          │
 //! │  PREP_ROUND_SELECTOR_COL    — 1 in rounds 0..79, 0 elsewhere                       │
 //! │  PREP_INIT_W_SELECTOR_COL   — 1 in rows 0..15, 0 elsewhere                         │
-//! │  PREP_SCHEDULE_SELECTOR_COL — 1 in rows 16..79, 0 elsewhere                        │
 //! │  PREP_FINAL_SELECTOR_COL    — 1 in row 80 only                                      │
 //! └─────────────────────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -188,21 +189,24 @@ pub(super) const AIR_WIDTH: usize = CARRY_SCHED_BIT_BASE + LIMBS_PER_WORD * 2;
 
 // ─── Preprocessed selector columns (at the tail of the shared column space) ──
 
+/// Preprocessed selector: 1 on the first row of each real block segment, 0 elsewhere.
+pub(super) const PREP_BLOCK_START_SELECTOR_COL: usize = AIR_WIDTH - 5;
+
+/// Preprocessed selector: 1 when transition constraints are active for this row.
+///
+/// This is set on rows whose `next` row belongs to the same real block segment.
+pub(super) const PREP_TRANSITION_SELECTOR_COL: usize = AIR_WIDTH - 4;
+
 /// Preprocessed selector: 1 for rows 0..79 (active SHA-512 rounds), 0 elsewhere.
 ///
 /// Guards constraints that only apply during real compression rounds (e.g. Σ0/Σ1
 /// bit decomposition checks, T1/T2 addition constraints).
-pub(super) const PREP_ROUND_SELECTOR_COL: usize = AIR_WIDTH - 4;
+pub(super) const PREP_ROUND_SELECTOR_COL: usize = AIR_WIDTH - 3;
 
 /// Preprocessed selector: 1 for rows 0..15 (initial W words from the block), 0 elsewhere.
 ///
 /// Binds the W column to the preprocessed W[0..15] values during the first 16 rows.
-pub(super) const PREP_INIT_W_SELECTOR_COL: usize = AIR_WIDTH - 3;
-
-/// Preprocessed selector: 1 for rows 16..79 (schedule recurrence), 0 elsewhere.
-///
-/// Enables the schedule recurrence constraint W[i] = σ1(W[i−2]) + W[i−7] + σ0(W[i−15]) + W[i−16].
-pub(super) const PREP_SCHEDULE_SELECTOR_COL: usize = AIR_WIDTH - 2;
+pub(super) const PREP_INIT_W_SELECTOR_COL: usize = AIR_WIDTH - 2;
 
 /// Preprocessed selector: 1 only on row 80 (final working state), 0 elsewhere.
 ///

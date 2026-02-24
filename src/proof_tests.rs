@@ -5,7 +5,7 @@ use p3_dft::Radix2DitParallel;
 use p3_field::Field;
 use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::{
@@ -46,7 +46,14 @@ fn setup_test_config() -> Config {
     let compress = MyCompress::new(perm.clone());
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let fri_params = create_test_fri_params(challenge_mmcs, 2);
+    let fri_params = FriParameters {
+        log_blowup: 3,
+        log_final_poly_len: 2,
+        num_queries: 2,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
+        mmcs: challenge_mmcs,
+    };
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
     Config::new(pcs, challenger)

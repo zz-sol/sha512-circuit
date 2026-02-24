@@ -143,11 +143,13 @@ where
             );
         }
 
+        let block_start_sel = local_prep[PREP_BLOCK_START_SELECTOR_COL].clone();
         for word in WORD_A..=WORD_H {
             for limb in 0..LIMBS_PER_WORD {
-                builder.when_first_row().assert_eq(
-                    local[limb_col(word, limb)].clone(),
-                    local_prep[limb_col(word, limb)].clone(),
+                builder.assert_zero(
+                    block_start_sel.clone()
+                        * (local[limb_col(word, limb)].clone()
+                            - local_prep[limb_col(word, limb)].clone()),
                 );
             }
         }
@@ -263,7 +265,9 @@ where
             }
         }
 
-        let mut transition = builder.when_transition();
+        let mut transition_window = builder.when_transition();
+        let mut transition =
+            transition_window.when(local_prep[PREP_TRANSITION_SELECTOR_COL].clone());
         constrain_add_5_limbs(
             &mut transition,
             &local,
@@ -336,7 +340,8 @@ where
             }
         }
 
-        let sched_sel = local_prep[PREP_SCHEDULE_SELECTOR_COL].clone();
+        let sched_sel = local_prep[PREP_ROUND_SELECTOR_COL].clone()
+            * (AB::Expr::ONE - local_prep[PREP_INIT_W_SELECTOR_COL].clone());
         constrain_schedule_recurrence(&mut transition, &local, sched_sel);
 
         let mut last = builder.when_last_row();
@@ -452,7 +457,8 @@ impl Sha512Circuit {
     ///   the first-row boundary constraint uses these to bind the main trace.
     /// * `PREP_ROUND_SELECTOR_COL`   — 1 in rows 0..79, 0 elsewhere.
     /// * `PREP_INIT_W_SELECTOR_COL`  — 1 in rows 0..15, 0 elsewhere.
-    /// * `PREP_SCHEDULE_SELECTOR_COL`— 1 in rows 16..79, 0 elsewhere.
+    /// * `PREP_BLOCK_START_SELECTOR_COL` — 1 on row 0 (block start), 0 elsewhere.
+    /// * `PREP_TRANSITION_SELECTOR_COL`  — 1 in rows 0..126, 0 on row 127.
     /// * `PREP_FINAL_SELECTOR_COL`   — 1 in row 80 only.
     ///
     /// # Panics
@@ -476,7 +482,8 @@ impl Sha512Circuit {
             }
             dst[PREP_ROUND_SELECTOR_COL] = BabyBear::from_bool(row < 80);
             dst[PREP_INIT_W_SELECTOR_COL] = BabyBear::from_bool(row < 16);
-            dst[PREP_SCHEDULE_SELECTOR_COL] = BabyBear::from_bool((16..80).contains(&row));
+            dst[PREP_BLOCK_START_SELECTOR_COL] = BabyBear::from_bool(row == 0);
+            dst[PREP_TRANSITION_SELECTOR_COL] = BabyBear::from_bool(row + 1 < TRACE_ROWS);
             dst[PREP_FINAL_SELECTOR_COL] = BabyBear::from_bool(row == 80);
             for (offset, value) in initial_state.iter().copied().enumerate() {
                 let word = WORD_A + offset;
@@ -689,6 +696,70 @@ impl Sha512Circuit {
         }
         out
     }
+
+    pub(crate) fn build_message_air_bundle(
+        initial_state: &[u64; 8],
+        message: &[u8],
+    ) -> MessageAirBundle {
+        let blocks = Sha512Circuit::padded_blocks(message);
+        let real_block_count = blocks.len();
+        let segment_count = real_block_count.next_power_of_two();
+        let total_rows = segment_count * TRACE_ROWS;
+        let degree_bits = total_rows.trailing_zeros() as usize;
+        debug_assert_eq!(1_usize << degree_bits, total_rows);
+
+        let mut main_values = vec![BabyBear::ZERO; total_rows * AIR_WIDTH];
+        let mut prep_values = vec![BabyBear::ZERO; total_rows * AIR_WIDTH];
+
+        let mut state = *initial_state;
+        let mut final_public_values = [BabyBear::ZERO; 8];
+
+        for seg in 0..segment_count {
+            if seg < real_block_count {
+                let block = blocks[seg];
+                let trace = Sha512Circuit::compress_block(&state, &block);
+                let main = Sha512Circuit::build_plonky3_air_trace(&trace);
+                let prep =
+                    Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, &block);
+
+                for row in 0..TRACE_ROWS {
+                    let dst_base = (seg * TRACE_ROWS + row) * AIR_WIDTH;
+                    let src_main = main.row_slice(row).expect("main row exists");
+                    let src_prep = prep.row_slice(row).expect("prep row exists");
+                    main_values[dst_base..dst_base + AIR_WIDTH].copy_from_slice(&src_main);
+                    prep_values[dst_base..dst_base + AIR_WIDTH].copy_from_slice(&src_prep);
+
+                    prep_values[dst_base + PREP_BLOCK_START_SELECTOR_COL] =
+                        BabyBear::from_bool(row == 0);
+                    prep_values[dst_base + PREP_TRANSITION_SELECTOR_COL] =
+                        BabyBear::from_bool(row + 1 < TRACE_ROWS);
+                    prep_values[dst_base + PREP_FINAL_SELECTOR_COL] =
+                        BabyBear::from_bool(seg + 1 == real_block_count && row == 80);
+                }
+
+                if seg + 1 == real_block_count {
+                    final_public_values = trace.round_states[80].map(bb);
+                }
+                state = trace.output_state;
+            }
+        }
+
+        MessageAirBundle {
+            main: RowMajorMatrix::new(main_values, AIR_WIDTH),
+            preprocessed: RowMajorMatrix::new(prep_values, AIR_WIDTH),
+            final_state: state,
+            final_public_values,
+            degree_bits,
+        }
+    }
+}
+
+pub(crate) struct MessageAirBundle {
+    pub(crate) main: RowMajorMatrix<BabyBear>,
+    pub(crate) preprocessed: RowMajorMatrix<BabyBear>,
+    pub(crate) final_state: [u64; 8],
+    pub(crate) final_public_values: [BabyBear; 8],
+    pub(crate) degree_bits: usize,
 }
 
 fn verify_with_preprocessed(

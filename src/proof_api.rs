@@ -11,8 +11,8 @@
 //! | Single-block | [`Sha512SingleBlockInstance`] | [`Sha512SingleBlockProof`] | 1 |
 //! | Message | [`Sha512MessageInstance`] | [`Sha512MultiBlockProof`] | N (auto-padded) |
 //!
-//! The message-level API pads the message, runs single-block proving on each resulting
-//! block sequentially, and chains the output state of each block into the next.
+//! The message-level API pads the message and proves all resulting blocks in one
+//! message-level STARK proof.
 //!
 //! ## Security note
 //!
@@ -26,7 +26,7 @@ use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_commit::{ExtensionMmcs, Pcs as PcsTrait};
 use p3_dft::Radix2DitParallel;
 use p3_field::extension::BinomialExtensionField;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{FriParameters, TwoAdicFriPcs};
 use p3_keccak::Keccak256Hash;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
@@ -56,7 +56,6 @@ const MAX_MESSAGE_INSTANCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SINGLE_PROOF_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MULTI_PROOF_BYTES: usize = 64 * 1024 * 1024;
 const MAX_INNER_PROOF_BYTES: usize = 16 * 1024 * 1024;
-const MAX_MULTI_BLOCK_PROOFS: usize = 4096;
 
 /// Concrete Plonky3 STARK configuration used by this crate.
 ///
@@ -162,22 +161,19 @@ pub struct Sha512SingleBlockProof {
 
 /// A zero-knowledge STARK proof for a complete SHA-512 message.
 ///
-/// Wraps one [`Sha512SingleBlockProof`] per padded block, together with the final
-/// chaining state and the 64-byte SHA-512 digest.
-///
-/// ## Proof size
-///
-/// Proof size scales linearly with the number of blocks: a 128-byte message produces
-/// one block proof (~200–400 KB), a 256-byte message produces two, and so on.
+/// Wraps one STARK proof over a message-level AIR trace spanning all padded blocks,
+/// together with the final chaining state and the 64-byte SHA-512 digest.
 ///
 /// ## Verification
 ///
 /// Pass this along with the original [`Sha512MessageInstance`] to [`verify_message_proof`].
-/// The verifier checks each block proof in sequence and also validates that `final_state`
-/// and `digest` are self-consistent.
+/// The verifier checks one proof and also validates that `final_state` and `digest`
+/// are self-consistent.
 pub struct Sha512MultiBlockProof {
-    /// One proof per 128-byte padded block, in order.
-    pub block_proofs: Vec<Sha512SingleBlockProof>,
+    /// The raw Plonky3 STARK proof.
+    pub proof: Sha512StarkProof,
+    /// Preprocessed verifier key committing to the instance-dependent message trace.
+    pub preprocessed_vk: Sha512PreprocessedVk,
     /// The SHA-512 chaining state after the last block (post feed-forward).
     pub final_state: [u64; 8],
     /// The 64-byte SHA-512 digest, i.e. `final_state` serialised in big-endian.
@@ -202,7 +198,8 @@ struct SerializableSingleBlockProof {
 
 #[derive(Serialize, Deserialize)]
 struct SerializableMultiBlockProof {
-    block_proofs: Vec<SerializableSingleBlockProof>,
+    proof_bytes: Vec<u8>,
+    vk: SerializableVk,
     final_state: [u64; 8],
     digest: Vec<u8>,
     settings: Sha512ProofSettings,
@@ -214,7 +211,14 @@ fn setup_config(settings: Sha512ProofSettings) -> Sha512StarkConfig {
     let compress = MyCompress::new(byte_hash);
     let val_mmcs = ValMmcs::new(field_hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let fri_params = create_test_fri_params(challenge_mmcs, settings.log_final_poly_len);
+    let fri_params = FriParameters {
+        log_blowup: 3,
+        log_final_poly_len: settings.log_final_poly_len,
+        num_queries: 2,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
+        mmcs: challenge_mmcs,
+    };
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri_params);
     let challenger = Challenger::from_hasher(settings.rng_seed.to_le_bytes().to_vec(), byte_hash);
     Sha512StarkConfig::new(pcs, challenger)
@@ -375,40 +379,39 @@ pub fn prove_message(instance: &Sha512MessageInstance) -> Sha512MultiBlockProof 
 ///
 /// Steps performed:
 /// 1. Pads `instance.message` per FIPS 180-4 §5.1.2 to produce N × 128-byte blocks.
-/// 2. For each block (in order):
-///    a. Creates a [`Sha512SingleBlockInstance`] with the current chaining state.
-///    b. Calls [`prove_single_block_with_settings`].
-///    c. Advances the chaining state to the block's output state.
-/// 3. Assembles all block proofs, the final state, the 64-byte digest, and the settings
+/// 2. Builds one message-level AIR trace over all blocks (padded to a power-of-two
+///    number of 128-row block segments).
+/// 3. Proves once over the full message trace.
+/// 4. Assembles the proof, verifier key, final state, digest, and settings
 ///    into a [`Sha512MultiBlockProof`].
-///
-/// Proof generation time scales linearly with the number of blocks (one STARK per block).
 ///
 /// # Panics
 ///
-/// Panics if any individual block proof fails (see [`prove_single_block_with_settings`]).
+/// Panics if Plonky3 setup/proving fails.
 pub fn prove_message_with_settings(
     instance: &Sha512MessageInstance,
     settings: Sha512ProofSettings,
 ) -> Sha512MultiBlockProof {
-    let mut state = instance.initial_state;
-    let mut block_proofs = Vec::new();
-
-    for block in Sha512Circuit::padded_blocks(&instance.message) {
-        let block_instance = Sha512SingleBlockInstance {
-            initial_state: state,
-            block,
-        };
-        let proof = prove_single_block_with_settings(block_instance, settings);
-        let trace = Sha512Circuit::compress_block(&state, &block);
-        state = trace.output_state;
-        block_proofs.push(proof);
-    }
+    let config = setup_config(settings);
+    let bundle =
+        Sha512Circuit::build_message_air_bundle(&instance.initial_state, &instance.message);
+    let air = Sha512RoundAir::new(bundle.preprocessed.clone());
+    let (preprocessed_prover_data, preprocessed_vk) =
+        setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, bundle.degree_bits)
+            .expect("has preprocessed");
+    let proof = prove_with_preprocessed(
+        &config,
+        &air,
+        bundle.main,
+        &bundle.final_public_values,
+        Some(&preprocessed_prover_data),
+    );
 
     Sha512MultiBlockProof {
-        block_proofs,
-        final_state: state,
-        digest: Sha512Circuit::state_to_digest(&state),
+        proof,
+        preprocessed_vk,
+        final_state: bundle.final_state,
+        digest: Sha512Circuit::state_to_digest(&bundle.final_state),
         settings,
     }
 }
@@ -430,40 +433,46 @@ pub fn verify_message_proof(
 /// Verifies a full-message proof with explicitly specified settings.
 ///
 /// Steps performed:
-/// 1. Pads `instance.message` and checks that the number of padded blocks matches
-///    `proof.block_proofs.len()`.
-/// 2. For each block (in order), calls [`verify_single_block_proof_with_settings`].
-/// 3. After all block proofs pass, verifies that `proof.final_state` equals the chained
-///    output state and that `proof.digest` is the big-endian serialisation of `final_state`.
+/// 1. Rebuilds the instance-dependent message preprocessed trace and expected final public values.
+/// 2. Checks that `proof.preprocessed_vk` matches the rebuilt verifier key.
+/// 3. Verifies the single STARK proof over the full message trace.
+/// 4. Verifies that `proof.final_state` and `proof.digest` are self-consistent.
 ///
 /// # Returns
 ///
-/// `true` if and only if all block proofs are valid and the chaining invariants hold.
+/// `true` if and only if all checks pass.
 pub fn verify_message_proof_with_settings(
     instance: &Sha512MessageInstance,
     proof: &Sha512MultiBlockProof,
     settings: Sha512ProofSettings,
 ) -> bool {
-    let blocks = Sha512Circuit::padded_blocks(&instance.message);
-    if blocks.len() != proof.block_proofs.len() {
+    let config = setup_config(settings);
+    let bundle =
+        Sha512Circuit::build_message_air_bundle(&instance.initial_state, &instance.message);
+    if proof.final_state != bundle.final_state
+        || proof.digest != Sha512Circuit::state_to_digest(&bundle.final_state)
+    {
         return false;
     }
 
-    let mut state = instance.initial_state;
-    for (block, block_proof) in blocks.iter().zip(&proof.block_proofs) {
-        let block_instance = Sha512SingleBlockInstance {
-            initial_state: state,
-            block: *block,
-        };
-        if !verify_single_block_proof_with_settings(block_instance, block_proof, settings) {
-            return false;
-        }
-
-        let trace = Sha512Circuit::compress_block(&state, block);
-        state = trace.output_state;
+    let air = Sha512RoundAir::new(bundle.preprocessed);
+    let Some((_, expected_vk)) =
+        setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, bundle.degree_bits)
+    else {
+        return false;
+    };
+    if !vk_matches(&expected_vk, &proof.preprocessed_vk) {
+        return false;
     }
 
-    proof.final_state == state && proof.digest == Sha512Circuit::state_to_digest(&state)
+    verify_with_preprocessed(
+        &config,
+        &air,
+        &proof.proof,
+        &bundle.final_public_values,
+        Some(&proof.preprocessed_vk),
+    )
+    .is_ok()
 }
 
 /// Serialises a [`Sha512SingleBlockInstance`] to bytes.
@@ -632,36 +641,22 @@ pub fn deserialize_single_block_proof(bytes: &[u8]) -> Result<Sha512SingleBlockP
 
 /// Serialises a [`Sha512MultiBlockProof`] to bytes using bincode.
 ///
-/// Each block proof's inner STARK proof is serialised separately (same two-level
-/// envelope strategy as [`serialize_single_block_proof`]).
+/// Uses a two-level envelope strategy (same as [`serialize_single_block_proof`]):
+/// the inner STARK proof is serialised first and embedded as bytes in the outer struct.
 ///
 /// # Panics
 ///
 /// Panics if bincode serialisation fails.
 pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
+    let proof_bytes =
+        bincode::serialize(&proof.proof).expect("multi proof inner serialization should succeed");
     assert!(
-        proof.block_proofs.len() <= MAX_MULTI_BLOCK_PROOFS,
-        "too many block proofs in serialized multi-block proof"
+        proof_bytes.len() <= MAX_INNER_PROOF_BYTES,
+        "inner multi-block proof exceeds configured size limit"
     );
-    let block_proofs: Vec<SerializableSingleBlockProof> = proof
-        .block_proofs
-        .iter()
-        .map(|p| {
-            let proof_bytes = bincode::serialize(&p.proof)
-                .expect("single proof inner serialization should succeed");
-            assert!(
-                proof_bytes.len() <= MAX_INNER_PROOF_BYTES,
-                "inner block proof exceeds configured size limit"
-            );
-            SerializableSingleBlockProof {
-                proof_bytes,
-                vk: to_serializable_vk(&p.preprocessed_vk),
-                settings: p.settings,
-            }
-        })
-        .collect();
     let serializable = SerializableMultiBlockProof {
-        block_proofs,
+        proof_bytes,
+        vk: to_serializable_vk(&proof.preprocessed_vk),
         final_state: proof.final_state,
         digest: proof.digest.to_vec(),
         settings: proof.settings,
@@ -680,8 +675,7 @@ pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
 ///
 /// Applies hard size limits:
 /// * Outer envelope: 64 MiB (`MAX_MULTI_PROOF_BYTES`).
-/// * Each inner block proof: 16 MiB (`MAX_INNER_PROOF_BYTES`).
-/// * Maximum block count: 4096 (`MAX_MULTI_BLOCK_PROOFS`).
+/// * Inner proof: 16 MiB (`MAX_INNER_PROOF_BYTES`).
 ///
 /// # Errors
 ///
@@ -689,8 +683,7 @@ pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
 /// * `bytes.len() > MAX_MULTI_PROOF_BYTES`.
 /// * Bincode outer deserialisation fails.
 /// * The digest field is not exactly 64 bytes.
-/// * The number of block proofs exceeds `MAX_MULTI_BLOCK_PROOFS`.
-/// * Any inner proof exceeds `MAX_INNER_PROOF_BYTES` or fails deserialisation.
+/// * The inner proof exceeds `MAX_INNER_PROOF_BYTES` or fails deserialisation.
 pub fn deserialize_multi_block_proof(bytes: &[u8]) -> Result<Sha512MultiBlockProof, String> {
     if bytes.len() > MAX_MULTI_PROOF_BYTES {
         return Err("serialized multi-block proof exceeds configured size limit".to_string());
@@ -704,33 +697,23 @@ pub fn deserialize_multi_block_proof(bytes: &[u8]) -> Result<Sha512MultiBlockPro
     if serializable.digest.len() != 64 {
         return Err("invalid digest length in serialized multi-block proof".to_string());
     }
-    if serializable.block_proofs.len() > MAX_MULTI_BLOCK_PROOFS {
-        return Err("too many block proofs in serialized multi-block proof".to_string());
+    if serializable.proof_bytes.len() > MAX_INNER_PROOF_BYTES {
+        return Err("inner multi-block proof exceeds configured size limit".to_string());
     }
     let mut digest = [0_u8; 64];
     digest.copy_from_slice(&serializable.digest);
 
-    let mut block_proofs = Vec::with_capacity(serializable.block_proofs.len());
     let inner_opts = bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .reject_trailing_bytes()
         .with_limit(MAX_INNER_PROOF_BYTES as u64);
-    for p in serializable.block_proofs {
-        if p.proof_bytes.len() > MAX_INNER_PROOF_BYTES {
-            return Err("inner block proof exceeds configured size limit".to_string());
-        }
-        let proof: Sha512StarkProof = inner_opts
-            .deserialize(&p.proof_bytes)
-            .map_err(|e| e.to_string())?;
-        block_proofs.push(Sha512SingleBlockProof {
-            proof,
-            preprocessed_vk: from_serializable_vk(p.vk),
-            settings: p.settings,
-        });
-    }
+    let proof: Sha512StarkProof = inner_opts
+        .deserialize(&serializable.proof_bytes)
+        .map_err(|e| e.to_string())?;
 
     Ok(Sha512MultiBlockProof {
-        block_proofs,
+        proof,
+        preprocessed_vk: from_serializable_vk(serializable.vk),
         final_state: serializable.final_state,
         digest,
         settings: serializable.settings,
