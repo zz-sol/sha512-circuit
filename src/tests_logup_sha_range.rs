@@ -19,7 +19,10 @@ use p3_merkle_tree_git::MerkleTreeMmcs;
 use p3_symmetric_git::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark_git::StarkConfig;
 
-use crate::air::{RANGE_SOURCES_FOR_TESTS, range_source_col_for_tests};
+use crate::air::{
+    RANGE_SOURCES_FOR_TESTS, RANGE_SOURCES_LAG_COUNT_FOR_TESTS, RANGE_SOURCES_LAG_START_FOR_TESTS,
+    range_source_col_for_tests,
+};
 use crate::constants::INITIAL_STATE;
 use crate::sha512::Sha512Circuit;
 use p3_field::PrimeField32;
@@ -126,15 +129,15 @@ where
     }
 }
 
-fn collect_sha_range_values() -> Vec<u32> {
+fn collect_sha_range_values(source_range: core::ops::Range<usize>) -> Vec<u32> {
     let block = [0_u8; 128];
     let block_trace = Sha512Circuit::compress_block(&INITIAL_STATE, &block);
     let main = Sha512Circuit::build_plonky3_air_trace(&block_trace);
 
-    let mut out = Vec::with_capacity(main.height() * RANGE_SOURCES_FOR_TESTS);
+    let mut out = Vec::with_capacity(main.height() * (source_range.end - source_range.start));
     for row in 0..main.height() {
         let row_slice = main.row_slice(row).expect("row exists");
-        for src in 0..RANGE_SOURCES_FOR_TESTS {
+        for src in source_range.clone() {
             let col = range_source_col_for_tests(src);
             out.push(row_slice[col].as_canonical_u32());
         }
@@ -176,7 +179,7 @@ fn sha_limb_ranges_pass_logup() {
         ProverData::<MyConfig>::from_airs_and_degrees(&config, &mut airs, &[LOG_HEIGHT]);
     let common = &prover_data.common;
 
-    let checked_values = collect_sha_range_values();
+    let checked_values = collect_sha_range_values(0..RANGE_SOURCES_FOR_TESTS);
     let traces = vec![build_lookup_trace(&checked_values)];
     let pvs = vec![vec![]];
     let instances = StarkInstance::new_multiple(&airs, &traces, &pvs, common);
@@ -194,8 +197,49 @@ fn sha_limb_ranges_reject_out_of_table_value() {
         ProverData::<MyConfig>::from_airs_and_degrees(&config, &mut airs, &[LOG_HEIGHT]);
     let common = &prover_data.common;
 
-    let mut checked_values = collect_sha_range_values();
+    let mut checked_values = collect_sha_range_values(0..RANGE_SOURCES_FOR_TESTS);
     checked_values[0] = 70_000;
+    let traces = vec![build_lookup_trace(&checked_values)];
+    let pvs = vec![vec![]];
+    let instances = StarkInstance::new_multiple(&airs, &traces, &pvs, common);
+    let _proof = prove_batch(&config, &instances, &prover_data);
+}
+
+#[test]
+fn sha_lag_limb_ranges_pass_logup() {
+    let config = make_config(125);
+    let air = LogupU16Air::new();
+    let mut airs = [air];
+    let prover_data =
+        ProverData::<MyConfig>::from_airs_and_degrees(&config, &mut airs, &[LOG_HEIGHT]);
+    let common = &prover_data.common;
+
+    let lag_start = RANGE_SOURCES_LAG_START_FOR_TESTS;
+    let lag_end = lag_start + RANGE_SOURCES_LAG_COUNT_FOR_TESTS;
+    let checked_values = collect_sha_range_values(lag_start..lag_end);
+
+    let traces = vec![build_lookup_trace(&checked_values)];
+    let pvs = vec![vec![]];
+    let instances = StarkInstance::new_multiple(&airs, &traces, &pvs, common);
+    let proof = prove_batch(&config, &instances, &prover_data);
+    verify_batch(&config, &airs, &proof, &pvs, common).expect("verification should pass");
+}
+
+#[test]
+#[should_panic]
+fn sha_lag_limb_ranges_reject_out_of_table_value() {
+    let config = make_config(126);
+    let air = LogupU16Air::new();
+    let mut airs = [air];
+    let prover_data =
+        ProverData::<MyConfig>::from_airs_and_degrees(&config, &mut airs, &[LOG_HEIGHT]);
+    let common = &prover_data.common;
+
+    let lag_start = RANGE_SOURCES_LAG_START_FOR_TESTS;
+    let lag_end = lag_start + RANGE_SOURCES_LAG_COUNT_FOR_TESTS;
+    let mut checked_values = collect_sha_range_values(lag_start..lag_end);
+    checked_values[0] = 70_000;
+
     let traces = vec![build_lookup_trace(&checked_values)];
     let pvs = vec![vec![]];
     let instances = StarkInstance::new_multiple(&airs, &traces, &pvs, common);

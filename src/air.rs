@@ -715,4 +715,7 @@ pub(crate) use columns::{
     WORD_W_FOR_TESTS,
 };
 #[cfg(all(test, feature = "logup-experimental"))]
-pub(crate) use columns::{RANGE_SOURCES_FOR_TESTS, range_source_col_for_tests};
+pub(crate) use columns::{
+    RANGE_SOURCES_FOR_TESTS, RANGE_SOURCES_LAG_COUNT_FOR_TESTS, RANGE_SOURCES_LAG_START_FOR_TESTS,
+    range_source_col_for_tests,
+};

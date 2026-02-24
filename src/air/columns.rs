@@ -310,6 +310,10 @@ pub(crate) const RANGE_BITS_PER_SOURCE_FOR_TESTS: usize = RANGE_BITS_PER_SOURCE;
 #[cfg(all(test, feature = "logup-experimental"))]
 pub(crate) const RANGE_SOURCES_FOR_TESTS: usize = RANGE_SOURCES;
 #[cfg(all(test, feature = "logup-experimental"))]
+pub(crate) const RANGE_SOURCES_LAG_START_FOR_TESTS: usize = RANGED_WORD_SOURCES;
+#[cfg(all(test, feature = "logup-experimental"))]
+pub(crate) const RANGE_SOURCES_LAG_COUNT_FOR_TESTS: usize = LAG_COUNT * LIMBS_PER_WORD;
+#[cfg(all(test, feature = "logup-experimental"))]
 pub(crate) fn range_source_col_for_tests(source: usize) -> usize {
     range_source_col(source)
 }
