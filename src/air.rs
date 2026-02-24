@@ -155,9 +155,9 @@ where
 
         let public: [AB::PublicVar; 8] = core::array::from_fn(|i| builder.public_values()[i]);
         let final_sel = local_prep[PREP_FINAL_SELECTOR_COL].clone();
-        for i in 0..8 {
+        for (i, pv) in public.iter().enumerate() {
             builder.assert_zero(
-                final_sel.clone() * (public[i].into() - pack_word_from_limbs::<AB>(&local, i)),
+                final_sel.clone() * ((*pv).into() - pack_word_from_limbs::<AB>(&local, i)),
             );
         }
         let round_sel = local_prep[PREP_ROUND_SELECTOR_COL].clone();
@@ -694,34 +694,31 @@ impl Sha512Circuit {
         let mut state = *initial_state;
         let mut final_public_values = [BabyBear::ZERO; 8];
 
-        for seg in 0..segment_count {
-            if seg < real_block_count {
-                let block = blocks[seg];
-                let trace = Sha512Circuit::compress_block(&state, &block);
-                let main = Sha512Circuit::build_plonky3_air_trace(&trace);
-                let prep =
-                    Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, &block);
+        for (seg, block) in blocks.iter().copied().enumerate() {
+            let trace = Sha512Circuit::compress_block(&state, &block);
+            let main = Sha512Circuit::build_plonky3_air_trace(&trace);
+            let prep =
+                Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, &block);
 
-                for row in 0..TRACE_ROWS {
-                    let dst_base = (seg * TRACE_ROWS + row) * AIR_WIDTH;
-                    let src_main = main.row_slice(row).expect("main row exists");
-                    let src_prep = prep.row_slice(row).expect("prep row exists");
-                    main_values[dst_base..dst_base + AIR_WIDTH].copy_from_slice(&src_main);
-                    prep_values[dst_base..dst_base + AIR_WIDTH].copy_from_slice(&src_prep);
+            for row in 0..TRACE_ROWS {
+                let dst_base = (seg * TRACE_ROWS + row) * AIR_WIDTH;
+                let src_main = main.row_slice(row).expect("main row exists");
+                let src_prep = prep.row_slice(row).expect("prep row exists");
+                main_values[dst_base..dst_base + AIR_WIDTH].copy_from_slice(&src_main);
+                prep_values[dst_base..dst_base + AIR_WIDTH].copy_from_slice(&src_prep);
 
-                    prep_values[dst_base + PREP_BLOCK_START_SELECTOR_COL] =
-                        BabyBear::from_bool(row == 0);
-                    prep_values[dst_base + PREP_TRANSITION_SELECTOR_COL] =
-                        BabyBear::from_bool(row + 1 < TRACE_ROWS);
-                    prep_values[dst_base + PREP_FINAL_SELECTOR_COL] =
-                        BabyBear::from_bool(seg + 1 == real_block_count && row == 80);
-                }
-
-                if seg + 1 == real_block_count {
-                    final_public_values = trace.round_states[80].map(bb);
-                }
-                state = trace.output_state;
+                prep_values[dst_base + PREP_BLOCK_START_SELECTOR_COL] =
+                    BabyBear::from_bool(row == 0);
+                prep_values[dst_base + PREP_TRANSITION_SELECTOR_COL] =
+                    BabyBear::from_bool(row + 1 < TRACE_ROWS);
+                prep_values[dst_base + PREP_FINAL_SELECTOR_COL] =
+                    BabyBear::from_bool(seg + 1 == real_block_count && row == 80);
             }
+
+            if seg + 1 == real_block_count {
+                final_public_values = trace.round_states[80].map(bb);
+            }
+            state = trace.output_state;
         }
 
         MessageAirBundle {

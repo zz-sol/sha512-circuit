@@ -37,11 +37,11 @@ let instance = Sha512SingleBlockInstance {
     block: [0u8; 128],
 };
 
-let proof = prove_single_block(instance);
+let proof = prove_single_block(instance).unwrap();
 assert!(verify_single_block_proof(instance, &proof));
 
 // Serialization
-let bytes = serialize_single_block_proof(&proof);
+let bytes = serialize_single_block_proof(&proof).unwrap();
 let proof2 = deserialize_single_block_proof(&bytes).unwrap();
 ```
 
@@ -68,7 +68,7 @@ let instance = Sha512MessageInstance {
     message: b"hello world".to_vec(),
 };
 
-let proof = prove_message(&instance);
+let proof = prove_message(&instance).unwrap();
 assert!(verify_message_proof(&instance, &proof));
 
 // The final hash digest is available without re-hashing:
@@ -81,11 +81,20 @@ let digest: [u8; 64] = proof.digest;
 use sha512_circuit::{Sha512ProofSettings, prove_single_block_with_settings};
 
 let settings = Sha512ProofSettings {
+    log_blowup: 3,
     log_final_poly_len: 4,  // larger = more security, larger proofs
+    num_queries: 28,
+    commit_proof_of_work_bits: 16,
+    query_proof_of_work_bits: 16,
     rng_seed: 1,            // domain-separated transcript seed
 };
-let proof = prove_single_block_with_settings(instance, settings);
+let proof = prove_single_block_with_settings(instance, settings).unwrap();
 ```
+
+Default rationale: `num_queries = 28` is chosen with `log_blowup = 3` and
+`query_proof_of_work_bits = 16` to target roughly 100 bits of conjectured FRI
+soundness (`3*28 + 16`). Treat this as a practical baseline, not a universal
+production target.
 
 ## Architecture
 
@@ -116,7 +125,7 @@ A separate matrix of the same width (AIR_WIDTH), committed separately, used to b
 - Initial state `(a..h)` on row 0
 - Round constants `K[0..79]`
 - Message words `W[0..15]` from the block
-- Row-type selectors at the final four columns (round, init-W, schedule, final)
+- Row-type selectors at the final five columns (block-start, transition, round, init-W, final)
 
 ## AIR Constraints
 
@@ -144,7 +153,7 @@ This addition is performed by the verifier (not inside the STARK). In the multi-
 ## Known Limitations
 
 - **Not audited.** This is a prototype and has not undergone a security review.
-- **No audited security parameter policy.** The crate exposes `log_final_poly_len`/`rng_seed`; production deployments should enforce their own verifier policy.
+- **No audited security parameter policy.** The crate exposes full FRI controls (`log_blowup`, `log_final_poly_len`, `num_queries`, `commit_proof_of_work_bits`, `query_proof_of_work_bits`, `rng_seed`); production deployments should enforce verifier-owned policy.
 - **No recursive proof composition.** Multi-block uses one message-level STARK proof, but there is no recursive aggregation layer.
 - **Soundness depends on correct instance wiring by the caller.** The proof binds to `(initial_state, block)`; a caller that passes wrong instance values to the verifier will get incorrect results.
 

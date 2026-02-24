@@ -151,7 +151,7 @@ fn public_proof_api_roundtrip() {
         initial_state: INITIAL_STATE,
         block: [0_u8; 128],
     };
-    let proof = prove_single_block(instance);
+    let proof = prove_single_block(instance).expect("prove");
     assert!(verify_single_block_proof(instance, &proof));
 
     let mut wrong_block = instance.block;
@@ -170,7 +170,7 @@ fn public_multiblock_api_boundaries() {
             initial_state: INITIAL_STATE,
             message: (0..len).map(|i| ((i * 29 + 7) & 0xff) as u8).collect(),
         };
-        let proof = prove_message(&instance);
+        let proof = prove_message(&instance).expect("prove");
         assert!(verify_message_proof(&instance, &proof), "len={len}");
     }
 }
@@ -182,10 +182,14 @@ fn public_multiblock_api_long_message() {
         message: (0..300).map(|i| ((i * 17 + 3) & 0xff) as u8).collect(),
     };
     let settings = Sha512ProofSettings {
+        log_blowup: 3,
         log_final_poly_len: 4,
+        num_queries: 2,
+        commit_proof_of_work_bits: 1,
+        query_proof_of_work_bits: 1,
         rng_seed: 9,
     };
-    let proof = prove_message_with_settings(&instance, settings);
+    let proof = prove_message_with_settings(&instance, settings).expect("prove");
     assert!(!verify_message_proof(&instance, &proof));
     assert!(verify_message_proof_with_settings(
         &instance, &proof, settings
@@ -207,8 +211,8 @@ fn serialization_roundtrip_instance_and_proof() {
     assert_eq!(single_back.initial_state, single_instance.initial_state);
     assert_eq!(single_back.block, single_instance.block);
 
-    let single_proof = prove_single_block(single_instance);
-    let single_proof_bytes = serialize_single_block_proof(&single_proof);
+    let single_proof = prove_single_block(single_instance).expect("prove");
+    let single_proof_bytes = serialize_single_block_proof(&single_proof).expect("encode");
     let single_proof_back = deserialize_single_block_proof(&single_proof_bytes).expect("decode");
     assert!(verify_single_block_proof(
         single_instance,
@@ -219,13 +223,13 @@ fn serialization_roundtrip_instance_and_proof() {
         initial_state: INITIAL_STATE,
         message: (0..150).map(|i| ((i * 5 + 11) & 0xff) as u8).collect(),
     };
-    let message_bytes = serialize_message_instance(&message_instance);
+    let message_bytes = serialize_message_instance(&message_instance).expect("encode");
     let message_back = deserialize_message_instance(&message_bytes).expect("decode");
     assert_eq!(message_back.initial_state, message_instance.initial_state);
     assert_eq!(message_back.message, message_instance.message);
 
-    let message_proof = prove_message(&message_instance);
-    let message_proof_bytes = serialize_multi_block_proof(&message_proof);
+    let message_proof = prove_message(&message_instance).expect("prove");
+    let message_proof_bytes = serialize_multi_block_proof(&message_proof).expect("encode");
     let message_proof_back = deserialize_multi_block_proof(&message_proof_bytes).expect("decode");
     assert!(verify_message_proof(&message_instance, &message_proof_back));
 }
@@ -248,4 +252,49 @@ fn deserialize_message_instance_rejects_oversized_declared_length() {
     bytes[64..72].copy_from_slice(&u64::MAX.to_be_bytes());
     let err = deserialize_message_instance(&bytes).expect_err("should fail");
     assert!(err.contains("exceeds configured size limit"));
+}
+
+#[test]
+fn verify_with_settings_rejects_weak_policy() {
+    let instance = Sha512SingleBlockInstance {
+        initial_state: INITIAL_STATE,
+        block: [0_u8; 128],
+    };
+    let proof = prove_single_block(instance).expect("prove");
+    let weak = Sha512ProofSettings {
+        log_blowup: 2,
+        log_final_poly_len: 3,
+        num_queries: 1,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 0,
+        rng_seed: 1,
+    };
+    assert!(!crate::verify_single_block_proof_with_settings(
+        instance, &proof, weak
+    ));
+}
+
+#[test]
+fn prove_message_rejects_oversized_input() {
+    let instance = Sha512MessageInstance {
+        initial_state: INITIAL_STATE,
+        message: vec![0_u8; (16 * 1024 * 1024) + 1],
+    };
+    let result = prove_message_with_settings(&instance, Sha512ProofSettings::default());
+    assert!(result.is_err());
+    let err = match result {
+        Ok(_) => String::new(),
+        Err(e) => e,
+    };
+    assert!(err.contains("size limit"));
+}
+
+#[test]
+fn serialize_message_instance_rejects_oversized_input() {
+    let instance = Sha512MessageInstance {
+        initial_state: INITIAL_STATE,
+        message: vec![0_u8; (16 * 1024 * 1024) + 1],
+    };
+    let err = serialize_message_instance(&instance).expect_err("should reject oversized message");
+    assert!(err.contains("size limit"));
 }

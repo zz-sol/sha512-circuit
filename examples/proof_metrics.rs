@@ -27,7 +27,7 @@ fn main() {
         let cols = 1076;
 
         let prove_start = Instant::now();
-        let proof = prove_message(&instance);
+        let proof = prove_message(&instance).expect("prove");
         let proving_time = prove_start.elapsed();
 
         let verify_start = Instant::now();
@@ -44,7 +44,9 @@ fn main() {
             std::process::exit(1);
         }
 
-        let proof_size = serialize_multi_block_proof(&proof).len();
+        let proof_size = serialize_multi_block_proof(&proof)
+            .expect("serialize")
+            .len();
         println!(
             "{:<10} {:>16.3} {:>20.3} {:>8} {:>8} {:>16} {:>16}",
             format!("{} B", size),

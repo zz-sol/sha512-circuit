@@ -52,6 +52,10 @@ type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type Commitment = <Pcs as PcsTrait<Challenge, Challenger>>::Commitment;
 const TRACE_DEGREE_BITS: usize = 7;
 const MIN_VERIFIER_LOG_FINAL_POLY_LEN: usize = 4;
+const MIN_VERIFIER_LOG_BLOWUP: usize = 3;
+const MIN_VERIFIER_NUM_QUERIES: usize = 2;
+const MIN_VERIFIER_COMMIT_POW_BITS: usize = 1;
+const MIN_VERIFIER_QUERY_POW_BITS: usize = 1;
 const MAX_MESSAGE_INSTANCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SINGLE_PROOF_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MULTI_PROOF_BYTES: usize = 64 * 1024 * 1024;
@@ -80,19 +84,45 @@ pub type Sha512PreprocessedVk = PreprocessedVerifierKey<Sha512StarkConfig>;
 ///
 /// ## Fields
 ///
+/// * `log_blowup` — log₂ of the FRI blowup factor.
 /// * `log_final_poly_len` — the log₂ of the FRI final polynomial length.  Larger values
 ///   increase proof security but also proof size and verification time.
+/// * `num_queries` — number of FRI queries.
+/// * `commit_proof_of_work_bits` — PoW bits before each commit-phase batching challenge.
+/// * `query_proof_of_work_bits` — PoW bits before query sampling.
 /// * `rng_seed` — the seed for the Fiat-Shamir challenger transcript.  Changing this
 ///   produces a different (but equally valid) proof for the same instance.
 ///
 /// ## Default
 ///
-/// The default settings (`log_final_poly_len = 4`, `rng_seed = 1`) are a verifier-side
-/// baseline. Production deployments should still set parameters explicitly.
+/// The default settings are:
+/// * `log_blowup = 3`
+/// * `log_final_poly_len = 5`
+/// * `num_queries = 28`
+/// * `commit_proof_of_work_bits = 16`
+/// * `query_proof_of_work_bits = 16`
+/// * `rng_seed = 1`
+///
+/// These are verifier-side baseline values. Production deployments should set parameters
+/// explicitly.
+///
+/// Rationale for `num_queries = 28`:
+/// with the current defaults (`log_blowup = 3`, `query_proof_of_work_bits = 16`), the
+/// p3-fri conjectured soundness estimate is roughly
+/// `log_blowup * num_queries + query_proof_of_work_bits = 3*28 + 16 = 100` bits.
+/// This is a practical baseline for this crate, not a universal production target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sha512ProofSettings {
+    /// Log₂ of FRI blowup factor.
+    pub log_blowup: usize,
     /// Log₂ of the FRI final polynomial length.  Controls proof security and size.
     pub log_final_poly_len: usize,
+    /// Number of FRI queries.
+    pub num_queries: usize,
+    /// Commit-phase proof-of-work bits before each batching challenge.
+    pub commit_proof_of_work_bits: usize,
+    /// Query-phase proof-of-work bits before sampling queries.
+    pub query_proof_of_work_bits: usize,
     /// Seed for the Fiat-Shamir transcript challenger.
     pub rng_seed: u64,
 }
@@ -100,7 +130,11 @@ pub struct Sha512ProofSettings {
 impl Default for Sha512ProofSettings {
     fn default() -> Self {
         Self {
-            log_final_poly_len: 4,
+            log_blowup: 3,
+            log_final_poly_len: 5,
+            num_queries: 28,
+            commit_proof_of_work_bits: 16,
+            query_proof_of_work_bits: 16,
             rng_seed: 1,
         }
     }
@@ -211,11 +245,11 @@ fn setup_config(settings: Sha512ProofSettings) -> Sha512StarkConfig {
     let val_mmcs = ValMmcs::new(field_hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = FriParameters {
-        log_blowup: 3,
+        log_blowup: settings.log_blowup,
         log_final_poly_len: settings.log_final_poly_len,
-        num_queries: 2,
-        commit_proof_of_work_bits: 1,
-        query_proof_of_work_bits: 1,
+        num_queries: settings.num_queries,
+        commit_proof_of_work_bits: settings.commit_proof_of_work_bits,
+        query_proof_of_work_bits: settings.query_proof_of_work_bits,
         mmcs: challenge_mmcs,
     };
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri_params);
@@ -243,16 +277,25 @@ fn from_serializable_vk(vk: SerializableVk) -> Sha512PreprocessedVk {
     }
 }
 
+fn meets_minimum_verifier_policy(settings: Sha512ProofSettings) -> bool {
+    settings.log_final_poly_len >= MIN_VERIFIER_LOG_FINAL_POLY_LEN
+        && settings.log_blowup >= MIN_VERIFIER_LOG_BLOWUP
+        && settings.num_queries >= MIN_VERIFIER_NUM_QUERIES
+        && settings.commit_proof_of_work_bits >= MIN_VERIFIER_COMMIT_POW_BITS
+        && settings.query_proof_of_work_bits >= MIN_VERIFIER_QUERY_POW_BITS
+}
+
 /// Proves correct SHA-512 compression of a single 128-byte block using default settings.
 ///
 /// This is a convenience wrapper around [`prove_single_block_with_settings`] that uses
-/// [`Sha512ProofSettings::default`] (test-grade FRI parameters).
+/// [`Sha512ProofSettings::default`].
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the Plonky3 prover encounters an internal error (e.g. an invalid trace).
-/// In practice this should not occur for valid inputs.
-pub fn prove_single_block(instance: Sha512SingleBlockInstance) -> Sha512SingleBlockProof {
+/// Returns `Err` if single-block proving setup fails.
+pub fn prove_single_block(
+    instance: Sha512SingleBlockInstance,
+) -> Result<Sha512SingleBlockProof, String> {
     prove_single_block_with_settings(instance, Sha512ProofSettings::default())
 }
 
@@ -267,13 +310,16 @@ pub fn prove_single_block(instance: Sha512SingleBlockInstance) -> Sha512SingleBl
 /// The resulting [`Sha512SingleBlockProof`] can be verified with
 /// [`verify_single_block_proof_with_settings`] using the same `settings`.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if Plonky3's `setup_preprocessed` or `prove_with_preprocessed` fails.
+/// Returns `Err` if preprocessed setup fails.
 pub fn prove_single_block_with_settings(
     instance: Sha512SingleBlockInstance,
     settings: Sha512ProofSettings,
-) -> Sha512SingleBlockProof {
+) -> Result<Sha512SingleBlockProof, String> {
+    if !meets_minimum_verifier_policy(settings) {
+        return Err("settings below minimum verifier policy".to_string());
+    }
     let config = setup_config(settings);
 
     let trace = Sha512Circuit::compress_block(&instance.initial_state, &instance.block);
@@ -285,8 +331,9 @@ pub fn prove_single_block_with_settings(
 
     let air = Sha512RoundAir::new(preprocessed);
     let (preprocessed_prover_data, preprocessed_vk) =
-        setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, TRACE_DEGREE_BITS)
-            .expect("has preprocessed");
+        setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, TRACE_DEGREE_BITS).ok_or_else(
+            || "failed to setup preprocessed data for single-block proof".to_string(),
+        )?;
     // Public values bind to the final compression working state (a..h) before feed-forward.
     let public_values = trace.round_states[80].map(bb);
 
@@ -298,11 +345,11 @@ pub fn prove_single_block_with_settings(
         Some(&preprocessed_prover_data),
     );
 
-    Sha512SingleBlockProof {
+    Ok(Sha512SingleBlockProof {
         proof,
         preprocessed_vk,
         settings,
-    }
+    })
 }
 
 /// Verifies a single-block proof using the settings embedded in the proof.
@@ -313,6 +360,7 @@ pub fn prove_single_block_with_settings(
 /// # Returns
 ///
 /// `true` if the proof is valid for the given `instance`, `false` otherwise.
+#[must_use = "verification result must be checked"]
 pub fn verify_single_block_proof(
     instance: Sha512SingleBlockInstance,
     proof: &Sha512SingleBlockProof,
@@ -337,12 +385,13 @@ pub fn verify_single_block_proof(
 /// # Returns
 ///
 /// `true` if and only if all four checks pass.
+#[must_use = "verification result must be checked"]
 pub fn verify_single_block_proof_with_settings(
     instance: Sha512SingleBlockInstance,
     proof: &Sha512SingleBlockProof,
     settings: Sha512ProofSettings,
 ) -> bool {
-    if settings.log_final_poly_len < MIN_VERIFIER_LOG_FINAL_POLY_LEN {
+    if !meets_minimum_verifier_policy(settings) {
         return false;
     }
     let config = setup_config(settings);
@@ -377,7 +426,7 @@ pub fn verify_single_block_proof_with_settings(
 /// Proves correct SHA-512 hashing of an arbitrary-length message using default settings.
 ///
 /// Convenience wrapper around [`prove_message_with_settings`].
-pub fn prove_message(instance: &Sha512MessageInstance) -> Sha512MultiBlockProof {
+pub fn prove_message(instance: &Sha512MessageInstance) -> Result<Sha512MultiBlockProof, String> {
     prove_message_with_settings(instance, Sha512ProofSettings::default())
 }
 
@@ -391,20 +440,26 @@ pub fn prove_message(instance: &Sha512MessageInstance) -> Sha512MultiBlockProof 
 /// 4. Assembles the proof, verifier key, final state, digest, and settings
 ///    into a [`Sha512MultiBlockProof`].
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if Plonky3 setup/proving fails.
+/// Returns `Err` if the input exceeds configured size limits or preprocessed setup fails.
 pub fn prove_message_with_settings(
     instance: &Sha512MessageInstance,
     settings: Sha512ProofSettings,
-) -> Sha512MultiBlockProof {
+) -> Result<Sha512MultiBlockProof, String> {
+    if !meets_minimum_verifier_policy(settings) {
+        return Err("settings below minimum verifier policy".to_string());
+    }
+    if instance.message.len() > MAX_MESSAGE_INSTANCE_BYTES {
+        return Err("message instance exceeds configured size limit".to_string());
+    }
     let config = setup_config(settings);
     let bundle =
         Sha512Circuit::build_message_air_bundle(&instance.initial_state, &instance.message);
     let air = Sha512RoundAir::new(bundle.preprocessed.clone());
     let (preprocessed_prover_data, preprocessed_vk) =
         setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, bundle.degree_bits)
-            .expect("has preprocessed");
+            .ok_or_else(|| "failed to setup preprocessed data for message proof".to_string())?;
     let proof = prove_with_preprocessed(
         &config,
         &air,
@@ -413,13 +468,13 @@ pub fn prove_message_with_settings(
         Some(&preprocessed_prover_data),
     );
 
-    Sha512MultiBlockProof {
+    Ok(Sha512MultiBlockProof {
         proof,
         preprocessed_vk,
         final_state: bundle.final_state,
         digest: Sha512Circuit::state_to_digest(&bundle.final_state),
         settings,
-    }
+    })
 }
 
 /// Verifies a full-message proof using the settings embedded in the proof.
@@ -430,6 +485,7 @@ pub fn prove_message_with_settings(
 /// # Returns
 ///
 /// `true` if the entire proof chain is valid for `instance`, `false` otherwise.
+#[must_use = "verification result must be checked"]
 pub fn verify_message_proof(
     instance: &Sha512MessageInstance,
     proof: &Sha512MultiBlockProof,
@@ -452,12 +508,13 @@ pub fn verify_message_proof(
 /// # Returns
 ///
 /// `true` if and only if all checks pass.
+#[must_use = "verification result must be checked"]
 pub fn verify_message_proof_with_settings(
     instance: &Sha512MessageInstance,
     proof: &Sha512MultiBlockProof,
     settings: Sha512ProofSettings,
 ) -> bool {
-    if settings.log_final_poly_len < MIN_VERIFIER_LOG_FINAL_POLY_LEN {
+    if !meets_minimum_verifier_policy(settings) {
         return false;
     }
     let config = setup_config(settings);
@@ -535,18 +592,17 @@ pub fn deserialize_single_block_instance(
 /// * 8 × 8 bytes — `initial_state` words in big-endian.
 /// * 8 bytes     — message length as a big-endian `u64`.
 /// * N bytes     — message bytes verbatim.
-pub fn serialize_message_instance(instance: &Sha512MessageInstance) -> Vec<u8> {
-    assert!(
-        instance.message.len() <= MAX_MESSAGE_INSTANCE_BYTES,
-        "message instance exceeds configured size limit"
-    );
+pub fn serialize_message_instance(instance: &Sha512MessageInstance) -> Result<Vec<u8>, String> {
+    if instance.message.len() > MAX_MESSAGE_INSTANCE_BYTES {
+        return Err("message instance exceeds configured size limit".to_string());
+    }
     let mut bytes = Vec::with_capacity(64 + 8 + instance.message.len());
     for word in instance.initial_state {
         bytes.extend_from_slice(&word.to_be_bytes());
     }
     bytes.extend_from_slice(&(instance.message.len() as u64).to_be_bytes());
     bytes.extend_from_slice(&instance.message);
-    bytes
+    Ok(bytes)
 }
 
 /// Deserialises a [`Sha512MessageInstance`] from bytes produced by
@@ -588,28 +644,24 @@ pub fn deserialize_message_instance(bytes: &[u8]) -> Result<Sha512MessageInstanc
 /// on deserialization) and embedded as a length-prefixed byte slice in the outer
 /// envelope.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if bincode serialisation fails (should not happen in practice).
-pub fn serialize_single_block_proof(proof: &Sha512SingleBlockProof) -> Vec<u8> {
-    let proof_bytes =
-        bincode::serialize(&proof.proof).expect("single proof inner serialization should succeed");
-    assert!(
-        proof_bytes.len() <= MAX_INNER_PROOF_BYTES,
-        "inner single-block proof exceeds configured size limit"
-    );
+/// Returns `Err` if serialization fails or proof-size limits are exceeded.
+pub fn serialize_single_block_proof(proof: &Sha512SingleBlockProof) -> Result<Vec<u8>, String> {
+    let proof_bytes = bincode::serialize(&proof.proof).map_err(|e| e.to_string())?;
+    if proof_bytes.len() > MAX_INNER_PROOF_BYTES {
+        return Err("inner single-block proof exceeds configured size limit".to_string());
+    }
     let serializable = SerializableSingleBlockProof {
         proof_bytes,
         vk: to_serializable_vk(&proof.preprocessed_vk),
         settings: proof.settings,
     };
-    let bytes =
-        bincode::serialize(&serializable).expect("single block proof serialization should succeed");
-    assert!(
-        bytes.len() <= MAX_SINGLE_PROOF_BYTES,
-        "serialized single-block proof exceeds configured size limit"
-    );
-    bytes
+    let bytes = bincode::serialize(&serializable).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_SINGLE_PROOF_BYTES {
+        return Err("serialized single-block proof exceeds configured size limit".to_string());
+    }
+    Ok(bytes)
 }
 
 /// Deserialises a [`Sha512SingleBlockProof`] from bytes produced by
@@ -658,16 +710,14 @@ pub fn deserialize_single_block_proof(bytes: &[u8]) -> Result<Sha512SingleBlockP
 /// Uses a two-level envelope strategy (same as [`serialize_single_block_proof`]):
 /// the inner STARK proof is serialised first and embedded as bytes in the outer struct.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if bincode serialisation fails.
-pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
-    let proof_bytes =
-        bincode::serialize(&proof.proof).expect("multi proof inner serialization should succeed");
-    assert!(
-        proof_bytes.len() <= MAX_INNER_PROOF_BYTES,
-        "inner multi-block proof exceeds configured size limit"
-    );
+/// Returns `Err` if serialization fails or proof-size limits are exceeded.
+pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Result<Vec<u8>, String> {
+    let proof_bytes = bincode::serialize(&proof.proof).map_err(|e| e.to_string())?;
+    if proof_bytes.len() > MAX_INNER_PROOF_BYTES {
+        return Err("inner multi-block proof exceeds configured size limit".to_string());
+    }
     let serializable = SerializableMultiBlockProof {
         proof_bytes,
         vk: to_serializable_vk(&proof.preprocessed_vk),
@@ -675,13 +725,11 @@ pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
         digest: proof.digest.to_vec(),
         settings: proof.settings,
     };
-    let bytes =
-        bincode::serialize(&serializable).expect("multi block proof serialization should succeed");
-    assert!(
-        bytes.len() <= MAX_MULTI_PROOF_BYTES,
-        "serialized multi-block proof exceeds configured size limit"
-    );
-    bytes
+    let bytes = bincode::serialize(&serializable).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_MULTI_PROOF_BYTES {
+        return Err("serialized multi-block proof exceeds configured size limit".to_string());
+    }
+    Ok(bytes)
 }
 
 /// Deserialises a [`Sha512MultiBlockProof`] from bytes produced by

@@ -28,7 +28,8 @@
 //! ## Security notice
 //!
 //! **This implementation has not been audited.** The default [`Sha512ProofSettings`] are
-//! verifier-oriented baseline parameters (`log_final_poly_len = 4`).
+//! verifier-oriented baseline parameters (`log_final_poly_len = 5`, `num_queries = 28`,
+//! `log_blowup = 3`).
 //! For any production deployment, supply custom settings with parameters appropriate for
 //! your target security level.
 //!
@@ -46,7 +47,7 @@
 //!     initial_state: INITIAL_STATE,
 //!     block: [0u8; 128],
 //! };
-//! let proof = prove_single_block(instance);
+//! let proof = prove_single_block(instance).unwrap();
 //! assert!(verify_single_block_proof(instance, &proof));
 //! ```
 //!
@@ -62,7 +63,7 @@
 //!     initial_state: INITIAL_STATE,
 //!     message: b"hello, world".to_vec(),
 //! };
-//! let proof = prove_message(&instance);
+//! let proof = prove_message(&instance).unwrap();
 //! assert!(verify_message_proof(&instance, &proof));
 //! let digest: [u8; 64] = proof.digest;
 //! ```
@@ -79,8 +80,8 @@
 //!     initial_state: INITIAL_STATE,
 //!     block: [0u8; 128],
 //! };
-//! let proof = prove_single_block(instance);
-//! let bytes = serialize_single_block_proof(&proof);
+//! let proof = prove_single_block(instance).unwrap();
+//! let bytes = serialize_single_block_proof(&proof).unwrap();
 //! let proof2 = deserialize_single_block_proof(&bytes).unwrap();
 //! ```
 //!
