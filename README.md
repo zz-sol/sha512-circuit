@@ -8,8 +8,8 @@ The library proves that a SHA-512 compression was computed correctly, without re
 
 - **Field**: BabyBear (2^31 − 2^27 + 1)
 - **Polynomial commitment**: FRI over BabyBear with Keccak-256 Merkle trees
-- **Trace size**: 128 rows × 1972 columns per 128-byte block
-- **Proof size**: ~200–400 KB per block (varies with FRI parameters)
+- **Trace size**: 128 rows × 1076 columns per 128-byte block
+- **Proof size**: ~90–200 KB per block (varies with FRI parameters)
 
 ## Usage
 
@@ -97,7 +97,7 @@ let proof = prove_single_block_with_settings(instance, settings);
 | 80 | Final working state `(a..h)` after round 80 |
 | 81–127 | Padding rows (degenerate rounds, W=K=0) to reach 2^7 |
 
-### Column layout (1972 columns per row)
+### Column layout (1076 columns per row)
 
 | Range | Content |
 |-------|---------|
@@ -106,8 +106,9 @@ let proof = prove_single_block_with_settings(instance, settings);
 | 80–143 | Lag limbs (4 limbs × 16 lags) |
 | 144–147 | Schedule carries (4 limbs) |
 | 148–531 | Bit decompositions: 64 bits × 6 words (A, B, C, E, F, G) |
-| 532–1939 | Range-proof bit columns: 16 bits × (D/H/W/K/T1/T2 limbs + lag limbs) |
-| 1940–1971 | Carry-bit columns (minimal-width per carry type) |
+| 532–659 | Lag sigma bits: 64 bits × {lag1, lag14} |
+| 660–1043 | Range-proof bit columns: 16 bits × (D/H/W/K/T1/T2 limbs) |
+| 1044–1075 | Carry-bit columns (minimal-width per carry type) |
 
 ### Preprocessed (instance-dependent) trace
 
@@ -126,7 +127,8 @@ The constraint system enforces:
 - **Message words**: `W[0..15]` bound to the preprocessed instance; `W[16..79]` constrained by the schedule recurrence `W[i] = σ1(W[i−2]) + W[i−7] + σ0(W[i−15]) + W[i−16]`
 - **Bitwise operations**: `Σ0(a)`, `Σ1(e)`, `Ch(e,f,g)`, `Maj(a,b,c)` computed bit-by-bit from bit-decomposed columns
 - **Limb arithmetic**: 64-bit additions decomposed into four 16-bit limbs with explicit carry propagation
-- **Range proofs**: all limbs and carries proven to be genuine 16-bit values via bit decomposition + boolean assertions
+- **Range proofs**: D/H/W/K/T1/T2 limbs and carry columns are proven via bit decomposition + boolean assertions
+- **Lag schedule inputs**: lag1 and lag14 are constrained by dedicated 64-bit Boolean decompositions used by the schedule σ functions
 - **Public-value binding**: `(a..h)` at row 80 is bound to public values, linking the proof to the correct output state
 
 ## Public Values and Feed-Forward

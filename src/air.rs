@@ -39,6 +39,7 @@ use p3_air::{
 };
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
+use p3_field::PrimeField32;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -247,6 +248,19 @@ where
                 packed += b * BabyBear::from_u32(1 << bit);
             }
             builder.assert_eq(local[range_source_col(src)].clone(), packed);
+        }
+
+        for (lag, base) in [(1_usize, LAG1_BIT_BASE), (14_usize, LAG14_BIT_BASE)] {
+            for bit in 0..64 {
+                builder.assert_bool(local[base + bit].clone());
+            }
+            for limb in 0..LIMBS_PER_WORD {
+                let mut packed = AB::Expr::ZERO;
+                for bit in 0..16 {
+                    packed += local[base + limb * 16 + bit].clone() * BabyBear::from_u32(1 << bit);
+                }
+                builder.assert_eq(local[lag_limb_col(lag, limb)].clone(), packed);
+            }
         }
 
         let mut transition = builder.when_transition();
@@ -508,8 +522,9 @@ impl Sha512Circuit {
     /// | Lag limbs | 80–143 | Previous 16 W values, 4 limbs each |
     /// | Sched carries | 144–147 | Carries for the W recurrence |
     /// | Bits | 148–531 | 64-bit Boolean decompositions for a,b,c,e,f,g |
-    /// | Range bits | 532–1939 | 16-bit range proofs for D/H/W/K/T1/T2 limbs + lag limbs |
-    /// | Carry bits | 1940–1971 | Minimal-width carry bit decompositions |
+    /// | Lag sigma bits | 532–659 | 64-bit decomposition for lag1 and lag14 |
+    /// | Range bits | 660–1043 | 16-bit range proofs for D/H/W/K/T1/T2 limbs |
+    /// | Carry bits | 1044–1075 | Minimal-width carry bit decompositions |
     pub fn build_plonky3_air_trace(trace: &BlockTrace) -> RowMajorMatrix<BabyBear> {
         let mut values = Vec::with_capacity(TRACE_ROWS * AIR_WIDTH);
         let mut lags = [0_u64; LAG_COUNT];
@@ -552,6 +567,7 @@ impl Sha512Circuit {
                 set_word_limbs(&mut row, w, value);
             }
             set_lag_words(&mut row, &lags);
+            set_lag_sigma_bits(&mut row, &lags);
             set_helper_bits(&mut row);
             set_carries(&mut row, CARRY_T1_BASE, carry_t1);
             set_carries(&mut row, CARRY_T2_BASE, carry_t2);
@@ -572,6 +588,7 @@ impl Sha512Circuit {
             set_word_limbs(&mut row80, w, value);
         }
         set_lag_words(&mut row80, &lags);
+        set_lag_sigma_bits(&mut row80, &lags);
         set_helper_bits(&mut row80);
         seed_padding_helpers(&mut row80);
         set_carry_bits(&mut row80);
@@ -607,6 +624,7 @@ impl Sha512Circuit {
                 set_word_limbs(&mut row, w, value);
             }
             set_lag_words(&mut row, &lags);
+            set_lag_sigma_bits(&mut row, &lags);
             set_helper_bits(&mut row);
             if row_idx != TRACE_ROWS - 1 {
                 seed_padding_helpers(&mut row);
@@ -651,6 +669,25 @@ impl Sha512Circuit {
         let trace = Sha512Circuit::compress_block(initial_state, block);
         let public_values = trace.round_states[80].map(bb);
         verify_with_preprocessed(main_trace, &preprocessed_trace, public_values)
+    }
+
+    pub fn collect_lag_range_values_for_logup(
+        initial_state: &[u64; 8],
+        block: &[u8; 128],
+    ) -> Vec<u32> {
+        let trace = Sha512Circuit::compress_block(initial_state, block);
+        let main = Sha512Circuit::build_plonky3_air_trace(&trace);
+        let lag_count = LAG_COUNT * LIMBS_PER_WORD;
+        let mut out = Vec::with_capacity(main.height() * lag_count);
+        for row in 0..main.height() {
+            let row_slice = main.row_slice(row).expect("row exists");
+            for lag in 0..LAG_COUNT {
+                for limb in 0..LIMBS_PER_WORD {
+                    out.push(row_slice[lag_limb_col(lag, limb)].as_canonical_u32());
+                }
+            }
+        }
+        out
     }
 }
 
@@ -710,12 +747,8 @@ fn verify_with_preprocessed(
 #[cfg(test)]
 pub(crate) use columns::{
     AIR_WIDTH_FOR_TESTS, LAG_LIMB_BASE_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS,
-    RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, SCHED_CARRY_BASE_FOR_TESTS,
-    WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS, WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS,
-    WORD_W_FOR_TESTS,
-};
-#[cfg(all(test, feature = "logup-experimental"))]
-pub(crate) use columns::{
-    RANGE_SOURCES_FOR_TESTS, RANGE_SOURCES_LAG_COUNT_FOR_TESTS, RANGE_SOURCES_LAG_START_FOR_TESTS,
+    RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, RANGE_SOURCES_FOR_TESTS,
+    SCHED_CARRY_BASE_FOR_TESTS, WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS,
+    WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS, WORD_W_FOR_TESTS, lag_limb_col_for_tests,
     range_source_col_for_tests,
 };

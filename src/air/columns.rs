@@ -18,8 +18,9 @@
 //! │  4 carries for W recurrence = 4 columns                                            │
 //! ├─ Bit decompositions ────────────────────────────────────────────────────────────────┤
 //! │  64 bits × {A, B, C, E, F, G} = 384 columns                                        │
+//! │  64 bits × {lag1, lag14} = 128 columns                                               │
 //! ├─ Range-proof bits ──────────────────────────────────────────────────────────────────┤
-//! │  RANGE_SOURCES sources × 16 bits each (D/H/W/K/T1/T2 limbs + lag limbs)            │
+//! │  RANGE_SOURCES sources × 16 bits each (D/H/W/K/T1/T2 limbs)                         │
 //! ├─ Carry bits ────────────────────────────────────────────────────────────────────────┤
 //! │  Minimal-width carry bit decompositions (T1=3 bits, T2/A/E=1 bit, sched=2 bits)   │
 //! ├─ Preprocessed columns (at the tail — shared with the preprocessed trace) ───────────┤
@@ -154,17 +155,19 @@ pub(super) const RANGED_WORDS: [usize; 6] = [WORD_D, WORD_H, WORD_W, WORD_K, WOR
 /// Number of range-proof sources contributed by word limbs.
 pub(super) const RANGED_WORD_SOURCES: usize = RANGED_WORDS.len() * LIMBS_PER_WORD;
 
-/// Number of 16-bit values that receive a generic range proof.
-///
-/// Sources: `RANGED_WORD_SOURCES` (selected word limbs)
-///        + `LAG_COUNT * LIMBS_PER_WORD` (lag limbs).
-pub(super) const RANGE_SOURCES: usize = RANGED_WORD_SOURCES + LAG_COUNT * LIMBS_PER_WORD;
+/// Number of 16-bit values that receive a generic range proof (selected word limbs only).
+pub(super) const RANGE_SOURCES: usize = RANGED_WORD_SOURCES;
 
 /// Number of Boolean bits allocated per range-proof source (= 16, covering 0..65535).
 pub(super) const RANGE_BITS_PER_SOURCE: usize = 16;
 
+/// First bit column for the Boolean decomposition of lag word W[i-2] (lag index 1).
+pub(super) const LAG1_BIT_BASE: usize = BIT_G_BASE + 64;
+/// First bit column for the Boolean decomposition of lag word W[i-15] (lag index 14).
+pub(super) const LAG14_BIT_BASE: usize = LAG1_BIT_BASE + 64;
+
 /// First column of the range-proof bit section.
-pub(super) const RANGE_BIT_BASE: usize = BIT_G_BASE + 64;
+pub(super) const RANGE_BIT_BASE: usize = LAG14_BIT_BASE + 64;
 
 /// First column of carry-bit decomposition section.
 pub(super) const CARRY_BIT_BASE: usize = RANGE_BIT_BASE + RANGE_SOURCES * RANGE_BITS_PER_SOURCE;
@@ -218,29 +221,18 @@ pub(super) fn lag_limb_col(lag: usize, limb: usize) -> usize {
     LAG_LIMB_BASE + lag * LIMBS_PER_WORD + limb
 }
 
-/// Returns the range-source index for limb `limb` of lag word `lag`.
-///
-/// Used by [`range_bit_col`] to map lag limbs into the range-proof bit section.
-pub(super) fn lag_limb_range_source(lag: usize, limb: usize) -> usize {
-    RANGED_WORD_SOURCES + lag * LIMBS_PER_WORD + limb
-}
-
 /// Returns the **column** index of range-proof source `source`.
 ///
-/// Maps logical source indices (word limbs → lag limbs → carry limbs) to the
+/// Maps logical source indices to selected word limbs (`D/H/W/K/T1/T2`) in the
 /// concrete column that holds the 16-bit value being range-proved.  Used by the
 /// constraint system to assert `source_col == Σ bit_col[source][k] * 2^k`.
 pub(super) fn range_source_col(source: usize) -> usize {
-    let word_limb_count = RANGED_WORD_SOURCES;
-    let lag_limb_count = LAG_COUNT * LIMBS_PER_WORD;
-    if source < word_limb_count {
+    if source < RANGED_WORD_SOURCES {
         let word_idx = source / LIMBS_PER_WORD;
         let limb = source % LIMBS_PER_WORD;
         limb_col(RANGED_WORDS[word_idx], limb)
-    } else if source < word_limb_count + lag_limb_count {
-        LAG_LIMB_BASE + (source - word_limb_count)
     } else {
-        unreachable!("range sources only include word and lag limbs");
+        unreachable!("range sources only include selected word limbs");
     }
 }
 
@@ -307,13 +299,13 @@ pub(crate) const SCHED_CARRY_BASE_FOR_TESTS: usize = SCHED_CARRY_BASE;
 pub(crate) const RANGE_BIT_BASE_FOR_TESTS: usize = RANGE_BIT_BASE;
 #[cfg(test)]
 pub(crate) const RANGE_BITS_PER_SOURCE_FOR_TESTS: usize = RANGE_BITS_PER_SOURCE;
-#[cfg(all(test, feature = "logup-experimental"))]
+#[cfg(test)]
 pub(crate) const RANGE_SOURCES_FOR_TESTS: usize = RANGE_SOURCES;
-#[cfg(all(test, feature = "logup-experimental"))]
-pub(crate) const RANGE_SOURCES_LAG_START_FOR_TESTS: usize = RANGED_WORD_SOURCES;
-#[cfg(all(test, feature = "logup-experimental"))]
-pub(crate) const RANGE_SOURCES_LAG_COUNT_FOR_TESTS: usize = LAG_COUNT * LIMBS_PER_WORD;
-#[cfg(all(test, feature = "logup-experimental"))]
+#[cfg(test)]
+pub(crate) fn lag_limb_col_for_tests(lag: usize, limb: usize) -> usize {
+    lag_limb_col(lag, limb)
+}
+#[cfg(test)]
 pub(crate) fn range_source_col_for_tests(source: usize) -> usize {
     range_source_col(source)
 }

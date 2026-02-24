@@ -19,12 +19,10 @@ use p3_merkle_tree_git::MerkleTreeMmcs;
 use p3_symmetric_git::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark_git::StarkConfig;
 
-use crate::air::{
-    RANGE_SOURCES_FOR_TESTS, RANGE_SOURCES_LAG_COUNT_FOR_TESTS, RANGE_SOURCES_LAG_START_FOR_TESTS,
-    range_source_col_for_tests,
-};
+use crate::air::{RANGE_SOURCES_FOR_TESTS, lag_limb_col_for_tests, range_source_col_for_tests};
 use crate::constants::INITIAL_STATE;
 use crate::sha512::Sha512Circuit;
+use crate::{Sha512SingleBlockInstance, prove_sha_lag_logup, verify_sha_lag_logup};
 use p3_field::PrimeField32;
 
 type Val = BabyBear;
@@ -145,6 +143,23 @@ fn collect_sha_range_values(source_range: core::ops::Range<usize>) -> Vec<u32> {
     out
 }
 
+fn collect_sha_lag_limb_values() -> Vec<u32> {
+    let block = [0_u8; 128];
+    let block_trace = Sha512Circuit::compress_block(&INITIAL_STATE, &block);
+    let main = Sha512Circuit::build_plonky3_air_trace(&block_trace);
+
+    let mut out = Vec::with_capacity(main.height() * 64);
+    for row in 0..main.height() {
+        let row_slice = main.row_slice(row).expect("row exists");
+        for lag in 0..16 {
+            for limb in 0..4 {
+                out.push(row_slice[lag_limb_col_for_tests(lag, limb)].as_canonical_u32());
+            }
+        }
+    }
+    out
+}
+
 fn build_lookup_trace(checked_values: &[u32]) -> RowMajorMatrix<Val> {
     assert!(checked_values.len() <= TABLE_SIZE);
     let mut histogram = vec![0_u32; TABLE_SIZE];
@@ -214,9 +229,7 @@ fn sha_lag_limb_ranges_pass_logup() {
         ProverData::<MyConfig>::from_airs_and_degrees(&config, &mut airs, &[LOG_HEIGHT]);
     let common = &prover_data.common;
 
-    let lag_start = RANGE_SOURCES_LAG_START_FOR_TESTS;
-    let lag_end = lag_start + RANGE_SOURCES_LAG_COUNT_FOR_TESTS;
-    let checked_values = collect_sha_range_values(lag_start..lag_end);
+    let checked_values = collect_sha_lag_limb_values();
 
     let traces = vec![build_lookup_trace(&checked_values)];
     let pvs = vec![vec![]];
@@ -235,13 +248,38 @@ fn sha_lag_limb_ranges_reject_out_of_table_value() {
         ProverData::<MyConfig>::from_airs_and_degrees(&config, &mut airs, &[LOG_HEIGHT]);
     let common = &prover_data.common;
 
-    let lag_start = RANGE_SOURCES_LAG_START_FOR_TESTS;
-    let lag_end = lag_start + RANGE_SOURCES_LAG_COUNT_FOR_TESTS;
-    let mut checked_values = collect_sha_range_values(lag_start..lag_end);
+    let mut checked_values = collect_sha_lag_limb_values();
     checked_values[0] = 70_000;
 
     let traces = vec![build_lookup_trace(&checked_values)];
     let pvs = vec![vec![]];
     let instances = StarkInstance::new_multiple(&airs, &traces, &pvs, common);
     let _proof = prove_batch(&config, &instances, &prover_data);
+}
+
+#[test]
+fn sha_lag_logup_api_roundtrip() {
+    let instance = Sha512SingleBlockInstance {
+        initial_state: INITIAL_STATE,
+        block: [0_u8; 128],
+    };
+    let proof = prove_sha_lag_logup(instance);
+    assert!(verify_sha_lag_logup(instance, &proof));
+}
+
+#[test]
+fn sha_lag_logup_api_rejects_wrong_instance() {
+    let instance = Sha512SingleBlockInstance {
+        initial_state: INITIAL_STATE,
+        block: [0_u8; 128],
+    };
+    let proof = prove_sha_lag_logup(instance);
+
+    let mut wrong_block = instance.block;
+    wrong_block[0] ^= 1;
+    let wrong = Sha512SingleBlockInstance {
+        initial_state: instance.initial_state,
+        block: wrong_block,
+    };
+    assert!(!verify_sha_lag_logup(wrong, &proof));
 }

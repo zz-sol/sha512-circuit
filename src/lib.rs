@@ -22,8 +22,8 @@
 //! | Field | BabyBear (p = 2³¹ − 2²⁷ + 1) |
 //! | Extension degree | 4 (binomial extension over BabyBear) |
 //! | Polynomial commitment | FRI over BabyBear with Keccak-256 Merkle trees |
-//! | Trace dimensions | 128 rows × 1972 columns per 128-byte block |
-//! | Proof size (typical) | 200–400 KB per block |
+//! | Trace dimensions | 128 rows × 1076 columns per 128-byte block |
+//! | Proof size (typical) | 90–200 KB per block |
 //!
 //! ## Security notice
 //!
@@ -97,6 +97,7 @@
 
 mod air;
 mod constants;
+mod logup_experimental;
 mod ops;
 mod proof_api;
 mod sha512;
@@ -104,6 +105,11 @@ mod trace;
 
 pub use air::Sha512RoundAir;
 pub use constants::INITIAL_STATE;
+pub use logup_experimental::{
+    Sha512LagLogupBatchProof, Sha512LagLogupConfig, Sha512LagLogupProof, Sha512LagLogupSettings,
+    prove_sha_lag_logup, prove_sha_lag_logup_with_settings, verify_sha_lag_logup,
+    verify_sha_lag_logup_with_settings,
+};
 pub use proof_api::{
     Sha512MessageInstance, Sha512MultiBlockProof, Sha512PreprocessedVk, Sha512ProofSettings,
     Sha512SingleBlockInstance, Sha512SingleBlockProof, Sha512StarkConfig, Sha512StarkProof,
@@ -121,7 +127,7 @@ pub use trace::BlockTrace;
 mod proof_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, feature = "logup-experimental"))]
+#[cfg(test)]
 mod tests_logup_experimental;
-#[cfg(all(test, feature = "logup-experimental"))]
+#[cfg(test)]
 mod tests_logup_sha_range;

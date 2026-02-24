@@ -2,9 +2,10 @@ use p3_air::AirBuilder;
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
 
+use super::columns::{LAG1_BIT_BASE, LAG14_BIT_BASE};
 use super::columns::{
     LIMBS_PER_WORD, SCHED_CARRY_BASE, WORD_W, carry_bit_col, carry_bit_width, lag_limb_col,
-    lag_limb_range_source, limb_col, range_bit_col,
+    limb_col,
 };
 
 pub(super) fn constrain_add_5_limbs<AB: AirBuilder<F = BabyBear>>(
@@ -193,8 +194,10 @@ fn small_sigma1_bit<B: AirBuilder<F = BabyBear>>(row: &[B::Var], bit: usize) -> 
 }
 
 fn lag_bit_expr<B: AirBuilder<F = BabyBear>>(row: &[B::Var], lag: usize, bit: usize) -> B::Expr {
-    let limb = bit / 16;
-    let offset = bit % 16;
-    let src = lag_limb_range_source(lag, limb);
-    row[range_bit_col(src, offset)].clone().into()
+    let base = match lag {
+        1 => LAG1_BIT_BASE,
+        14 => LAG14_BIT_BASE,
+        _ => unreachable!("only lag=1 and lag=14 are bit-addressed in schedule sigmas"),
+    };
+    row[base + bit].clone().into()
 }

@@ -9,6 +9,7 @@ use super::columns::{
     WORD_W, carry_bit_col, carry_bit_width, lag_limb_col, limb_col, range_bit_col,
     range_source_col,
 };
+use super::columns::{LAG1_BIT_BASE, LAG14_BIT_BASE};
 
 pub(super) fn set_word_limbs(row: &mut [BabyBear; AIR_WIDTH], word: usize, value: u64) {
     let limbs = u64_to_limbs(value);
@@ -111,6 +112,13 @@ pub(super) fn set_helper_bits(row: &mut [BabyBear; AIR_WIDTH]) {
         for i in 0..64 {
             row[base + i] = BabyBear::from_bool(((value >> i) & 1) == 1);
         }
+    }
+}
+
+pub(super) fn set_lag_sigma_bits(row: &mut [BabyBear; AIR_WIDTH], lags: &[u64; LAG_COUNT]) {
+    for i in 0..64 {
+        row[LAG1_BIT_BASE + i] = BabyBear::from_bool(((lags[1] >> i) & 1) == 1);
+        row[LAG14_BIT_BASE + i] = BabyBear::from_bool(((lags[14] >> i) & 1) == 1);
     }
 }
 
