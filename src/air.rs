@@ -1,6 +1,15 @@
-use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
+#[path = "air/columns.rs"]
+mod columns;
+#[path = "air/constraints.rs"]
+mod constraints;
+#[path = "air/trace_builder.rs"]
+mod trace_builder;
+
+use p3_air::{
+    Air, AirBuilder, AirBuilderWithPublicValues, BaseAir, BaseAirWithPublicValues, PairBuilder,
+};
 use p3_baby_bear::BabyBear;
-use p3_field::{PrimeCharacteristicRing, PrimeField32};
+use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -8,55 +17,9 @@ use crate::constants::K;
 use crate::ops::{bb, big_sigma0, big_sigma1, ch, maj, small_sigma0, small_sigma1};
 use crate::sha512::Sha512Circuit;
 use crate::trace::BlockTrace;
-
-const TRACE_ROWS: usize = 128;
-const SHA_ROUNDS_PLUS_INIT: usize = 81;
-
-const WORD_A: usize = 0;
-const WORD_B: usize = 1;
-const WORD_C: usize = 2;
-const WORD_D: usize = 3;
-const WORD_E: usize = 4;
-const WORD_F: usize = 5;
-const WORD_G: usize = 6;
-const WORD_H: usize = 7;
-const WORD_W: usize = 8;
-const WORD_K: usize = 9;
-const WORD_SIGMA0: usize = 10;
-const WORD_SIGMA1: usize = 11;
-const WORD_CH: usize = 12;
-const WORD_MAJ: usize = 13;
-const WORD_T1: usize = 14;
-const WORD_T2: usize = 15;
-const WORD_COUNT: usize = 16;
-const PREP_ROUND_SELECTOR_COL: usize = WORD_T1;
-const PREP_INIT_W_SELECTOR_COL: usize = WORD_T2;
-const PREP_SCHEDULE_SELECTOR_COL: usize = WORD_SIGMA0;
-
-const LIMBS_PER_WORD: usize = 4;
-const LIMB_BASE: usize = WORD_COUNT;
-const CARRY_T1_BASE: usize = LIMB_BASE + WORD_COUNT * LIMBS_PER_WORD;
-const CARRY_T2_BASE: usize = CARRY_T1_BASE + LIMBS_PER_WORD;
-const CARRY_A_BASE: usize = CARRY_T2_BASE + LIMBS_PER_WORD;
-const CARRY_E_BASE: usize = CARRY_A_BASE + LIMBS_PER_WORD;
-const LAG_COUNT: usize = 16;
-const LAG_BASE: usize = CARRY_E_BASE + LIMBS_PER_WORD;
-const LAG_LIMB_BASE: usize = LAG_BASE + LAG_COUNT;
-const SCHED_CARRY_BASE: usize = LAG_LIMB_BASE + LAG_COUNT * LIMBS_PER_WORD;
-const BIT_A_BASE: usize = SCHED_CARRY_BASE + LIMBS_PER_WORD;
-const BIT_B_BASE: usize = BIT_A_BASE + 64;
-const BIT_C_BASE: usize = BIT_B_BASE + 64;
-const BIT_E_BASE: usize = BIT_C_BASE + 64;
-const BIT_F_BASE: usize = BIT_E_BASE + 64;
-const BIT_G_BASE: usize = BIT_F_BASE + 64;
-const BIT_SIGMA0_BASE: usize = BIT_G_BASE + 64;
-const BIT_SIGMA1_BASE: usize = BIT_SIGMA0_BASE + 64;
-const BIT_CH_BASE: usize = BIT_SIGMA1_BASE + 64;
-const BIT_MAJ_BASE: usize = BIT_CH_BASE + 64;
-const RANGE_SOURCES: usize = (WORD_COUNT + LAG_COUNT) * LIMBS_PER_WORD + LIMBS_PER_WORD * 5;
-const RANGE_BITS_PER_SOURCE: usize = 16;
-const RANGE_BIT_BASE: usize = BIT_MAJ_BASE + 64;
-const AIR_WIDTH: usize = RANGE_BIT_BASE + RANGE_SOURCES * RANGE_BITS_PER_SOURCE;
+use columns::*;
+use constraints::*;
+use trace_builder::*;
 
 #[derive(Clone, Debug)]
 pub struct Sha512RoundAir {
@@ -79,9 +42,15 @@ impl BaseAir<BabyBear> for Sha512RoundAir {
     }
 }
 
+impl BaseAirWithPublicValues<BabyBear> for Sha512RoundAir {
+    fn num_public_values(&self) -> usize {
+        8
+    }
+}
+
 impl<AB> Air<AB> for Sha512RoundAir
 where
-    AB: AirBuilder<F = BabyBear> + PairBuilder,
+    AB: AirBuilderWithPublicValues<F = BabyBear> + PairBuilder,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -105,6 +74,12 @@ where
             builder
                 .when_first_row()
                 .assert_eq(local[col].clone(), local_prep[col].clone());
+        }
+
+        let public: [AB::PublicVar; 8] = core::array::from_fn(|i| builder.public_values()[i]);
+        let final_sel = local_prep[PREP_FINAL_SELECTOR_COL].clone();
+        for i in 0..8 {
+            builder.assert_zero(final_sel.clone() * (public[i].into() - local[i].clone()));
         }
 
         let two16 = BabyBear::from_u32(1 << 16);
@@ -284,159 +259,6 @@ where
     }
 }
 
-fn constrain_add_5_limbs<AB: AirBuilder<F = BabyBear>>(
-    builder: &mut AB,
-    row: &[AB::Var],
-    ops: [usize; 5],
-    out: usize,
-    carry_base: usize,
-) {
-    let two16 = BabyBear::from_u32(1 << 16);
-    let mut carry_in = AB::Expr::ZERO;
-
-    for limb in 0..LIMBS_PER_WORD {
-        let carry_out = row[carry_base + limb].clone();
-        let sum = row[limb_col(ops[0], limb)].clone()
-            + row[limb_col(ops[1], limb)].clone()
-            + row[limb_col(ops[2], limb)].clone()
-            + row[limb_col(ops[3], limb)].clone()
-            + row[limb_col(ops[4], limb)].clone()
-            + carry_in;
-        let rhs = row[limb_col(out, limb)].clone() + carry_out.clone() * two16;
-        builder.assert_eq(sum, rhs);
-        carry_in = carry_out.into();
-    }
-}
-
-fn constrain_add_2_limbs<AB: AirBuilder<F = BabyBear>>(
-    builder: &mut AB,
-    row: &[AB::Var],
-    lhs: usize,
-    rhs: usize,
-    out: usize,
-    carry_base: usize,
-) {
-    let two16 = BabyBear::from_u32(1 << 16);
-    let mut carry_in = AB::Expr::ZERO;
-
-    for limb in 0..LIMBS_PER_WORD {
-        let carry_out = row[carry_base + limb].clone();
-        let sum = row[limb_col(lhs, limb)].clone() + row[limb_col(rhs, limb)].clone() + carry_in;
-        let expected = row[limb_col(out, limb)].clone() + carry_out.clone() * two16;
-        builder.assert_eq(sum, expected);
-        carry_in = carry_out.into();
-    }
-}
-
-fn constrain_add_2_limbs_across_rows<AB: AirBuilder<F = BabyBear>>(
-    builder: &mut AB,
-    local: &[AB::Var],
-    next: &[AB::Var],
-    lhs: usize,
-    rhs: usize,
-    out_next: usize,
-    carry_base: usize,
-) {
-    let two16 = BabyBear::from_u32(1 << 16);
-    let mut carry_in = AB::Expr::ZERO;
-
-    for limb in 0..LIMBS_PER_WORD {
-        let carry_out = local[carry_base + limb].clone();
-        let sum =
-            local[limb_col(lhs, limb)].clone() + local[limb_col(rhs, limb)].clone() + carry_in;
-        let expected = next[limb_col(out_next, limb)].clone() + carry_out.clone() * two16;
-        builder.assert_eq(sum, expected);
-        carry_in = carry_out.into();
-    }
-}
-
-fn constrain_schedule_recurrence<B: AirBuilder<F = BabyBear>>(
-    builder: &mut B,
-    row: &[B::Var],
-    selector: B::Var,
-) {
-    let two16 = BabyBear::from_u32(1 << 16);
-    let mut carry_in = B::Expr::ZERO;
-
-    for limb in 0..LIMBS_PER_WORD {
-        let sigma1_limb = pack_small_sigma1_limb::<B>(row, limb);
-        let sigma0_limb = pack_small_sigma0_limb::<B>(row, limb);
-        let lag7_limb = row[lag_limb_col(6, limb)].clone();
-        let lag16_limb = row[lag_limb_col(15, limb)].clone();
-        let carry_out = row[SCHED_CARRY_BASE + limb].clone();
-
-        let sum = sigma1_limb + lag7_limb + sigma0_limb + lag16_limb + carry_in;
-        let expected = row[limb_col(WORD_W, limb)].clone() + carry_out.clone() * two16;
-        builder.assert_zero(selector.clone() * (sum - expected));
-        carry_in = carry_out.into();
-    }
-}
-
-fn pack_small_sigma0_limb<B: AirBuilder<F = BabyBear>>(row: &[B::Var], limb: usize) -> B::Expr {
-    let mut out = B::Expr::ZERO;
-    for bit in 0..16 {
-        let b = small_sigma0_bit::<B>(row, limb * 16 + bit);
-        out += b * BabyBear::from_u32(1 << bit);
-    }
-    out
-}
-
-fn pack_small_sigma1_limb<B: AirBuilder<F = BabyBear>>(row: &[B::Var], limb: usize) -> B::Expr {
-    let mut out = B::Expr::ZERO;
-    for bit in 0..16 {
-        let b = small_sigma1_bit::<B>(row, limb * 16 + bit);
-        out += b * BabyBear::from_u32(1 << bit);
-    }
-    out
-}
-
-fn small_sigma0_bit<B: AirBuilder<F = BabyBear>>(row: &[B::Var], bit: usize) -> B::Expr {
-    xor3_expr::<B>(
-        lag_bit_expr::<B>(row, 14, (bit + 1) % 64),
-        lag_bit_expr::<B>(row, 14, (bit + 8) % 64),
-        if bit + 7 < 64 {
-            lag_bit_expr::<B>(row, 14, bit + 7)
-        } else {
-            B::Expr::ZERO
-        },
-    )
-}
-
-fn small_sigma1_bit<B: AirBuilder<F = BabyBear>>(row: &[B::Var], bit: usize) -> B::Expr {
-    xor3_expr::<B>(
-        lag_bit_expr::<B>(row, 1, (bit + 19) % 64),
-        lag_bit_expr::<B>(row, 1, (bit + 61) % 64),
-        if bit + 6 < 64 {
-            lag_bit_expr::<B>(row, 1, bit + 6)
-        } else {
-            B::Expr::ZERO
-        },
-    )
-}
-
-fn lag_bit_expr<B: AirBuilder<F = BabyBear>>(row: &[B::Var], lag: usize, bit: usize) -> B::Expr {
-    let limb = bit / 16;
-    let offset = bit % 16;
-    let src = lag_limb_range_source(lag, limb);
-    row[range_bit_col(src, offset)].clone().into()
-}
-
-fn pack_bits<AB: AirBuilder<F = BabyBear>>(row: &[AB::Var], bit_base: usize) -> AB::Expr {
-    let mut acc = AB::Expr::ZERO;
-    for i in (0..64).rev() {
-        acc = acc * BabyBear::TWO + row[bit_base + i].clone();
-    }
-    acc
-}
-
-fn xor2_expr<AB: AirBuilder<F = BabyBear>>(x: AB::Expr, y: AB::Expr) -> AB::Expr {
-    x.clone() + y.clone() - (x * y) * BabyBear::TWO
-}
-
-fn xor3_expr<AB: AirBuilder<F = BabyBear>>(x: AB::Expr, y: AB::Expr, z: AB::Expr) -> AB::Expr {
-    xor2_expr::<AB>(xor2_expr::<AB>(x, y), z)
-}
-
 #[derive(Clone)]
 struct AirConstraintChecker {
     main: RowMajorMatrix<BabyBear>,
@@ -444,6 +266,7 @@ struct AirConstraintChecker {
     is_first: BabyBear,
     is_last: BabyBear,
     is_transition: BabyBear,
+    public_values: [BabyBear; 8],
     violated: bool,
 }
 
@@ -453,6 +276,7 @@ impl AirConstraintChecker {
         preprocessed: RowMajorMatrix<BabyBear>,
         is_first: bool,
         is_last: bool,
+        public_values: [BabyBear; 8],
     ) -> Self {
         Self {
             main,
@@ -460,6 +284,7 @@ impl AirConstraintChecker {
             is_first: BabyBear::from_bool(is_first),
             is_last: BabyBear::from_bool(is_last),
             is_transition: BabyBear::from_bool(!is_last),
+            public_values,
             violated: false,
         }
     }
@@ -504,6 +329,14 @@ impl PairBuilder for AirConstraintChecker {
     }
 }
 
+impl AirBuilderWithPublicValues for AirConstraintChecker {
+    type PublicVar = BabyBear;
+
+    fn public_values(&self) -> &[Self::PublicVar] {
+        &self.public_values
+    }
+}
+
 impl Sha512Circuit {
     pub fn build_plonky3_preprocessed_trace_from_instance(
         initial_state: &[u64; 8],
@@ -521,11 +354,15 @@ impl Sha512Circuit {
             dst[PREP_ROUND_SELECTOR_COL] = BabyBear::from_bool(row < 80);
             dst[PREP_INIT_W_SELECTOR_COL] = BabyBear::from_bool(row < 16);
             dst[PREP_SCHEDULE_SELECTOR_COL] = BabyBear::from_bool((16..80).contains(&row));
-        }
-
-        let first = &mut values[..AIR_WIDTH];
-        for (i, word) in initial_state.iter().enumerate() {
-            first[i] = bb(*word);
+            dst[PREP_FINAL_SELECTOR_COL] = BabyBear::from_bool(row == 80);
+            dst[WORD_A] = bb(initial_state[0]);
+            dst[WORD_B] = bb(initial_state[1]);
+            dst[WORD_C] = bb(initial_state[2]);
+            dst[WORD_D] = bb(initial_state[3]);
+            dst[WORD_E] = bb(initial_state[4]);
+            dst[WORD_F] = bb(initial_state[5]);
+            dst[WORD_G] = bb(initial_state[6]);
+            dst[WORD_H] = bb(initial_state[7]);
         }
 
         RowMajorMatrix::new(values, AIR_WIDTH)
@@ -595,8 +432,6 @@ impl Sha512Circuit {
         }
         set_lag_words(&mut row80, &lags);
         set_helper_bits(&mut row80);
-        // Row 80 starts the deterministic padding segment; set helper columns so row 80 -> row 81
-        // satisfies transition constraints.
         seed_padding_helpers(&mut row80);
         set_range_bits(&mut row80);
         values.extend(row80);
@@ -632,9 +467,7 @@ impl Sha512Circuit {
             }
             set_lag_words(&mut row, &lags);
             set_helper_bits(&mut row);
-            if row_idx == TRACE_ROWS - 1 {
-                // Last row keeps helper columns zero.
-            } else {
+            if row_idx != TRACE_ROWS - 1 {
                 seed_padding_helpers(&mut row);
             }
             set_range_bits(&mut row);
@@ -644,22 +477,6 @@ impl Sha512Circuit {
         }
 
         RowMajorMatrix::new(values, AIR_WIDTH)
-    }
-
-    #[deprecated(
-        note = "Use verify_plonky3_air_trace_with_instance; this infers instance from witness."
-    )]
-    pub fn verify_plonky3_air_trace(main_trace: &RowMajorMatrix<BabyBear>) -> bool {
-        if main_trace.width() != AIR_WIDTH || main_trace.height() != TRACE_ROWS {
-            return false;
-        }
-
-        let Some((initial_state, block)) = infer_instance_from_main(main_trace) else {
-            return false;
-        };
-        let preprocessed_trace =
-            Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&initial_state, &block);
-        verify_with_preprocessed(main_trace, &preprocessed_trace)
     }
 
     pub fn verify_plonky3_air_trace_with_instance(
@@ -673,13 +490,16 @@ impl Sha512Circuit {
 
         let preprocessed_trace =
             Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(initial_state, block);
-        verify_with_preprocessed(main_trace, &preprocessed_trace)
+        let trace = Sha512Circuit::compress_block(initial_state, block);
+        let public_values = trace.round_states[80].map(bb);
+        verify_with_preprocessed(main_trace, &preprocessed_trace, public_values)
     }
 }
 
 fn verify_with_preprocessed(
     main_trace: &RowMajorMatrix<BabyBear>,
     preprocessed_trace: &RowMajorMatrix<BabyBear>,
+    public_values: [BabyBear; 8],
 ) -> bool {
     if preprocessed_trace.width() != AIR_WIDTH || preprocessed_trace.height() != TRACE_ROWS {
         return false;
@@ -717,6 +537,7 @@ fn verify_with_preprocessed(
             RowMajorMatrix::new(prep_window, AIR_WIDTH),
             row == 0,
             row + 1 == main_trace.height(),
+            public_values,
         );
         air.eval(&mut checker);
 
@@ -728,284 +549,10 @@ fn verify_with_preprocessed(
     true
 }
 
-fn infer_instance_from_main(
-    main_trace: &RowMajorMatrix<BabyBear>,
-) -> Option<([u64; 8], [u8; 128])> {
-    let row0 = main_trace.row_slice(0)?;
-    let state = [
-        decode_word_from_row(&row0, WORD_A)?,
-        decode_word_from_row(&row0, WORD_B)?,
-        decode_word_from_row(&row0, WORD_C)?,
-        decode_word_from_row(&row0, WORD_D)?,
-        decode_word_from_row(&row0, WORD_E)?,
-        decode_word_from_row(&row0, WORD_F)?,
-        decode_word_from_row(&row0, WORD_G)?,
-        decode_word_from_row(&row0, WORD_H)?,
-    ];
-
-    let mut block = [0_u8; 128];
-    for i in 0..16 {
-        let row = main_trace.row_slice(i)?;
-        let w = decode_word_from_row(&row, WORD_W)?;
-        block[i * 8..(i + 1) * 8].copy_from_slice(&w.to_be_bytes());
-    }
-
-    Some((state, block))
-}
-
-fn limb_col(word: usize, limb: usize) -> usize {
-    LIMB_BASE + word * LIMBS_PER_WORD + limb
-}
-
-fn lag_col(lag: usize) -> usize {
-    LAG_BASE + lag
-}
-
-fn lag_limb_col(lag: usize, limb: usize) -> usize {
-    LAG_LIMB_BASE + lag * LIMBS_PER_WORD + limb
-}
-
-fn lag_limb_range_source(lag: usize, limb: usize) -> usize {
-    WORD_COUNT * LIMBS_PER_WORD + lag * LIMBS_PER_WORD + limb
-}
-
-fn range_source_col(source: usize) -> usize {
-    let word_limb_count = WORD_COUNT * LIMBS_PER_WORD;
-    let lag_limb_count = LAG_COUNT * LIMBS_PER_WORD;
-    if source < word_limb_count {
-        LIMB_BASE + source
-    } else if source < word_limb_count + lag_limb_count {
-        LAG_LIMB_BASE + (source - word_limb_count)
-    } else {
-        let carry_offset = source - word_limb_count - lag_limb_count;
-        if carry_offset < 4 * LIMBS_PER_WORD {
-            CARRY_T1_BASE + carry_offset
-        } else {
-            SCHED_CARRY_BASE + (carry_offset - 4 * LIMBS_PER_WORD)
-        }
-    }
-}
-
-fn range_bit_col(source: usize, bit: usize) -> usize {
-    RANGE_BIT_BASE + source * RANGE_BITS_PER_SOURCE + bit
-}
-
-fn set_word_limbs(row: &mut [BabyBear; AIR_WIDTH], word: usize, value: u64) {
-    let limbs = u64_to_limbs(value);
-    for (i, limb) in limbs.into_iter().enumerate() {
-        row[limb_col(word, i)] = BabyBear::from_u16(limb);
-    }
-}
-
-fn set_lag_words(row: &mut [BabyBear; AIR_WIDTH], lags: &[u64; LAG_COUNT]) {
-    for (lag, value) in lags.iter().copied().enumerate() {
-        row[lag_col(lag)] = bb(value);
-        let limbs = u64_to_limbs(value);
-        for (limb, limb_value) in limbs.into_iter().enumerate() {
-            row[lag_limb_col(lag, limb)] = BabyBear::from_u16(limb_value);
-        }
-    }
-}
-
-fn set_carries(row: &mut [BabyBear; AIR_WIDTH], base: usize, carries: [u16; LIMBS_PER_WORD]) {
-    for (i, carry) in carries.into_iter().enumerate() {
-        row[base + i] = BabyBear::from_u16(carry);
-    }
-}
-
-fn set_range_bits(row: &mut [BabyBear; AIR_WIDTH]) {
-    for source in 0..RANGE_SOURCES {
-        let value = range_source_col(source);
-        let x = row[value].as_canonical_u32();
-        for bit in 0..RANGE_BITS_PER_SOURCE {
-            row[range_bit_col(source, bit)] = BabyBear::from_bool(((x >> bit) & 1) == 1);
-        }
-    }
-}
-
-fn advance_lags(lags: &mut [u64; LAG_COUNT], word: u64) {
-    for i in (1..LAG_COUNT).rev() {
-        lags[i] = lags[i - 1];
-    }
-    lags[0] = word;
-}
-
-fn seed_padding_helpers(row: &mut [BabyBear; AIR_WIDTH]) {
-    let h = decode_word_from_inline(row, WORD_H);
-    let d = decode_word_from_inline(row, WORD_D);
-
-    let t1 = h;
-    let t2 = 0_u64;
-    let (_, carry_t1) = add_with_carries_5(h, 0, 0, 0, 0);
-    let (_, carry_t2) = add_with_carries_2(0, 0);
-    let (_, carry_a) = add_with_carries_2(t1, t2);
-    let (_, carry_e) = add_with_carries_2(d, t1);
-
-    row[WORD_W] = BabyBear::ZERO;
-    row[WORD_K] = BabyBear::ZERO;
-    row[WORD_SIGMA0] = BabyBear::ZERO;
-    row[WORD_SIGMA1] = BabyBear::ZERO;
-    row[WORD_CH] = BabyBear::ZERO;
-    row[WORD_MAJ] = BabyBear::ZERO;
-    row[WORD_T1] = bb(t1);
-    row[WORD_T2] = BabyBear::ZERO;
-
-    set_word_limbs(row, WORD_W, 0);
-    set_word_limbs(row, WORD_K, 0);
-    set_word_limbs(row, WORD_SIGMA0, 0);
-    set_word_limbs(row, WORD_SIGMA1, 0);
-    set_word_limbs(row, WORD_CH, 0);
-    set_word_limbs(row, WORD_MAJ, 0);
-    set_word_limbs(row, WORD_T1, t1);
-    set_word_limbs(row, WORD_T2, 0);
-    set_helper_bits(row);
-
-    set_carries(row, CARRY_T1_BASE, carry_t1);
-    set_carries(row, CARRY_T2_BASE, carry_t2);
-    set_carries(row, CARRY_A_BASE, carry_a);
-    set_carries(row, CARRY_E_BASE, carry_e);
-}
-
-fn set_helper_bits(row: &mut [BabyBear; AIR_WIDTH]) {
-    for (word, base) in [
-        (WORD_A, BIT_A_BASE),
-        (WORD_B, BIT_B_BASE),
-        (WORD_C, BIT_C_BASE),
-        (WORD_E, BIT_E_BASE),
-        (WORD_F, BIT_F_BASE),
-        (WORD_G, BIT_G_BASE),
-        (WORD_SIGMA0, BIT_SIGMA0_BASE),
-        (WORD_SIGMA1, BIT_SIGMA1_BASE),
-        (WORD_CH, BIT_CH_BASE),
-        (WORD_MAJ, BIT_MAJ_BASE),
-    ] {
-        let value = decode_word_from_inline(row, word);
-        for i in 0..64 {
-            row[base + i] = BabyBear::from_bool(((value >> i) & 1) == 1);
-        }
-    }
-}
-
-fn u64_to_limbs(value: u64) -> [u16; LIMBS_PER_WORD] {
-    [
-        (value & 0xffff) as u16,
-        ((value >> 16) & 0xffff) as u16,
-        ((value >> 32) & 0xffff) as u16,
-        ((value >> 48) & 0xffff) as u16,
-    ]
-}
-
-fn decode_word_from_row(row: &[BabyBear], word: usize) -> Option<u64> {
-    let mut out = 0_u64;
-    for limb in 0..LIMBS_PER_WORD {
-        let x = row[limb_col(word, limb)].as_canonical_u32();
-        if x > u16::MAX as u32 {
-            return None;
-        }
-        out |= u64::from(x) << (16 * limb);
-    }
-
-    (row[word] == bb(out)).then_some(out)
-}
-
-fn decode_word_from_inline(row: &[BabyBear; AIR_WIDTH], word: usize) -> u64 {
-    let mut out = 0_u64;
-    for limb in 0..LIMBS_PER_WORD {
-        let x = row[limb_col(word, limb)].as_canonical_u32();
-        out |= u64::from(x) << (16 * limb);
-    }
-    out
-}
-
-fn add_with_carries_5(a: u64, b: u64, c: u64, d: u64, e: u64) -> (u64, [u16; LIMBS_PER_WORD]) {
-    let al = u64_to_limbs(a);
-    let bl = u64_to_limbs(b);
-    let cl = u64_to_limbs(c);
-    let dl = u64_to_limbs(d);
-    let el = u64_to_limbs(e);
-    let mut out = [0_u16; LIMBS_PER_WORD];
-    let mut carries = [0_u16; LIMBS_PER_WORD];
-    let mut carry = 0_u32;
-
-    for i in 0..LIMBS_PER_WORD {
-        let sum = al[i] as u32 + bl[i] as u32 + cl[i] as u32 + dl[i] as u32 + el[i] as u32 + carry;
-        out[i] = (sum & 0xffff) as u16;
-        carry = sum >> 16;
-        carries[i] = carry as u16;
-    }
-
-    (
-        u64::from(out[0])
-            | (u64::from(out[1]) << 16)
-            | (u64::from(out[2]) << 32)
-            | (u64::from(out[3]) << 48),
-        carries,
-    )
-}
-
-fn add_with_carries_2(a: u64, b: u64) -> (u64, [u16; LIMBS_PER_WORD]) {
-    let al = u64_to_limbs(a);
-    let bl = u64_to_limbs(b);
-    let mut out = [0_u16; LIMBS_PER_WORD];
-    let mut carries = [0_u16; LIMBS_PER_WORD];
-    let mut carry = 0_u32;
-
-    for i in 0..LIMBS_PER_WORD {
-        let sum = al[i] as u32 + bl[i] as u32 + carry;
-        out[i] = (sum & 0xffff) as u16;
-        carry = sum >> 16;
-        carries[i] = carry as u16;
-    }
-
-    (
-        u64::from(out[0])
-            | (u64::from(out[1]) << 16)
-            | (u64::from(out[2]) << 32)
-            | (u64::from(out[3]) << 48),
-        carries,
-    )
-}
-
-fn add_with_carries_4(a: u64, b: u64, c: u64, d: u64) -> (u64, [u16; LIMBS_PER_WORD]) {
-    let al = u64_to_limbs(a);
-    let bl = u64_to_limbs(b);
-    let cl = u64_to_limbs(c);
-    let dl = u64_to_limbs(d);
-    let mut out = [0_u16; LIMBS_PER_WORD];
-    let mut carries = [0_u16; LIMBS_PER_WORD];
-    let mut carry = 0_u32;
-
-    for i in 0..LIMBS_PER_WORD {
-        let sum = al[i] as u32 + bl[i] as u32 + cl[i] as u32 + dl[i] as u32 + carry;
-        out[i] = (sum & 0xffff) as u16;
-        carry = sum >> 16;
-        carries[i] = carry as u16;
-    }
-
-    (
-        u64::from(out[0])
-            | (u64::from(out[1]) << 16)
-            | (u64::from(out[2]) << 32)
-            | (u64::from(out[3]) << 48),
-        carries,
-    )
-}
-
 #[cfg(test)]
-pub(crate) const AIR_WIDTH_FOR_TESTS: usize = AIR_WIDTH;
-#[cfg(test)]
-pub(crate) const WORD_T1_FOR_TESTS: usize = WORD_T1;
-#[cfg(test)]
-pub(crate) const WORD_W_FOR_TESTS: usize = WORD_W;
-#[cfg(test)]
-pub(crate) const WORD_K_FOR_TESTS: usize = WORD_K;
-#[cfg(test)]
-pub(crate) const WORD_SIGMA0_FOR_TESTS: usize = WORD_SIGMA0;
-#[cfg(test)]
-pub(crate) const WORD_A_FOR_TESTS: usize = WORD_A;
-#[cfg(test)]
-pub(crate) const WORD_E_FOR_TESTS: usize = WORD_E;
-#[cfg(test)]
-pub(crate) const LIMB_BASE_FOR_TESTS: usize = LIMB_BASE;
-#[cfg(test)]
-pub(crate) const LIMBS_PER_WORD_FOR_TESTS: usize = LIMBS_PER_WORD;
+pub(crate) use columns::{
+    AIR_WIDTH_FOR_TESTS, LAG_BASE_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS,
+    RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, SCHED_CARRY_BASE_FOR_TESTS,
+    WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS, WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS,
+    WORD_W_FOR_TESTS,
+};

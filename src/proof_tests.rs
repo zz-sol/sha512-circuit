@@ -3,6 +3,7 @@ use p3_challenger::DuplexChallenger;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
 use p3_field::Field;
+use p3_field::PrimeCharacteristicRing;
 use p3_field::extension::BinomialExtensionField;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -15,6 +16,7 @@ use rand::rngs::SmallRng;
 
 use crate::air::Sha512RoundAir;
 use crate::constants::INITIAL_STATE;
+use crate::ops::bb;
 use crate::proof_api::{
     Sha512MessageInstance, Sha512ProofSettings, Sha512SingleBlockInstance,
     deserialize_message_instance, deserialize_multi_block_proof, deserialize_single_block_instance,
@@ -61,14 +63,27 @@ fn prove_and_verify_sha512_air_single_block() {
     let preprocessed =
         Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, &block);
     let air = Sha512RoundAir::new(preprocessed);
+    let public_values = trace.round_states[80].map(bb);
 
     let degree_bits = 7; // 2^7 = 128 rows
     let (preprocessed_prover_data, preprocessed_vk) =
         setup_preprocessed::<Config, _>(&config, &air, degree_bits).expect("has preprocessed");
 
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed_prover_data));
-    verify_with_preprocessed(&config, &air, &proof, &[], Some(&preprocessed_vk))
-        .expect("verification should pass");
+    let proof = prove_with_preprocessed(
+        &config,
+        &air,
+        main,
+        &public_values,
+        Some(&preprocessed_prover_data),
+    );
+    verify_with_preprocessed(
+        &config,
+        &air,
+        &proof,
+        &public_values,
+        Some(&preprocessed_vk),
+    )
+    .expect("verification should pass");
 }
 
 #[test]
@@ -83,8 +98,9 @@ fn proof_rejects_wrong_instance_preprocessed_vk() {
     let preprocessed =
         Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, &block);
     let air = Sha512RoundAir::new(preprocessed);
+    let public_values = trace.round_states[80].map(bb);
     let (prover_data, _vk) = setup_preprocessed::<Config, _>(&config, &air, 7).unwrap();
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&prover_data));
+    let proof = prove_with_preprocessed(&config, &air, main, &public_values, Some(&prover_data));
 
     let mut wrong_block = block;
     wrong_block[0] ^= 1;
@@ -94,7 +110,30 @@ fn proof_rejects_wrong_instance_preprocessed_vk() {
     let (_wrong_prover_data, wrong_vk) =
         setup_preprocessed::<Config, _>(&config, &wrong_air, 7).expect("has preprocessed");
 
-    let result = verify_with_preprocessed(&config, &wrong_air, &proof, &[], Some(&wrong_vk));
+    let result =
+        verify_with_preprocessed(&config, &wrong_air, &proof, &public_values, Some(&wrong_vk));
+    assert!(result.is_err());
+}
+
+#[test]
+fn proof_rejects_wrong_public_values() {
+    let config = setup_test_config();
+    let state = INITIAL_STATE;
+    let block = [0_u8; 128];
+
+    let trace = Sha512Circuit::compress_block(&state, &block);
+    let main = Sha512Circuit::build_plonky3_air_trace(&trace);
+    let preprocessed =
+        Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(&state, &block);
+    let air = Sha512RoundAir::new(preprocessed);
+    let (prover_data, vk) =
+        setup_preprocessed::<Config, _>(&config, &air, 7).expect("has preprocessed");
+    let public_values = trace.round_states[80].map(bb);
+    let proof = prove_with_preprocessed(&config, &air, main, &public_values, Some(&prover_data));
+
+    let mut wrong_public_values = public_values;
+    wrong_public_values[0] += BabyBear::ONE;
+    let result = verify_with_preprocessed(&config, &air, &proof, &wrong_public_values, Some(&vk));
     assert!(result.is_err());
 }
 

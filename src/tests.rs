@@ -4,8 +4,10 @@ use p3_matrix::dense::RowMajorMatrix;
 use sha2::{Digest, Sha512};
 
 use crate::air::{
-    AIR_WIDTH_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS, WORD_A_FOR_TESTS,
-    WORD_E_FOR_TESTS, WORD_K_FOR_TESTS, WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS, WORD_W_FOR_TESTS,
+    AIR_WIDTH_FOR_TESTS, LAG_BASE_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS,
+    RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, SCHED_CARRY_BASE_FOR_TESTS,
+    WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS, WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS,
+    WORD_W_FOR_TESTS,
 };
 use crate::constants::INITIAL_STATE;
 use crate::sha512::Sha512Circuit;
@@ -155,6 +157,42 @@ fn plonky3_air_rejects_wrong_public_instance() {
     let (state, mut block, air_trace) = make_air_trace_with_instance();
     block[0] ^= 0x01;
 
+    assert!(!Sha512Circuit::verify_plonky3_air_trace_with_instance(
+        &air_trace, &state, &block
+    ));
+}
+
+#[test]
+fn plonky3_air_rejects_tampered_lag_column() {
+    let (state, block, mut air_trace) = make_air_trace_with_instance();
+    let row = 30;
+    let base = row * AIR_WIDTH_FOR_TESTS;
+    air_trace.values[base + LAG_BASE_FOR_TESTS + 3] += BabyBear::ONE;
+    assert!(!Sha512Circuit::verify_plonky3_air_trace_with_instance(
+        &air_trace, &state, &block
+    ));
+}
+
+#[test]
+fn plonky3_air_rejects_tampered_schedule_carry() {
+    let (state, block, mut air_trace) = make_air_trace_with_instance();
+    let row = 40;
+    let base = row * AIR_WIDTH_FOR_TESTS;
+    air_trace.values[base + SCHED_CARRY_BASE_FOR_TESTS] += BabyBear::ONE;
+    assert!(!Sha512Circuit::verify_plonky3_air_trace_with_instance(
+        &air_trace, &state, &block
+    ));
+}
+
+#[test]
+fn plonky3_air_rejects_tampered_range_bits_with_same_packed_values() {
+    let (state, block, mut air_trace) = make_air_trace_with_instance();
+    let row = 10;
+    let source = 0;
+    let bit = 0;
+    let base = row * AIR_WIDTH_FOR_TESTS;
+    let bit_col = RANGE_BIT_BASE_FOR_TESTS + source * RANGE_BITS_PER_SOURCE_FOR_TESTS + bit;
+    air_trace.values[base + bit_col] += BabyBear::ONE;
     assert!(!Sha512Circuit::verify_plonky3_air_trace_with_instance(
         &air_trace, &state, &block
     ));

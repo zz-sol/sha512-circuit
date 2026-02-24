@@ -16,6 +16,7 @@ use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 use crate::air::Sha512RoundAir;
+use crate::ops::bb;
 use crate::sha512::Sha512Circuit;
 
 pub type Val = BabyBear;
@@ -152,8 +153,15 @@ pub fn prove_single_block_with_settings(
     let (preprocessed_prover_data, preprocessed_vk) =
         setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, TRACE_DEGREE_BITS)
             .expect("has preprocessed");
+    let public_values = trace.round_states[80].map(bb);
 
-    let proof = prove_with_preprocessed(&config, &air, main, &[], Some(&preprocessed_prover_data));
+    let proof = prove_with_preprocessed(
+        &config,
+        &air,
+        main,
+        &public_values,
+        Some(&preprocessed_prover_data),
+    );
 
     Sha512SingleBlockProof {
         proof,
@@ -179,6 +187,9 @@ pub fn verify_single_block_proof_with_settings(
         &instance.initial_state,
         &instance.block,
     );
+    let public_values = Sha512Circuit::compress_block(&instance.initial_state, &instance.block)
+        .round_states[80]
+        .map(bb);
     let air = Sha512RoundAir::new(preprocessed);
     let Some((_, expected_vk)) =
         setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, TRACE_DEGREE_BITS)
@@ -193,7 +204,7 @@ pub fn verify_single_block_proof_with_settings(
         &config,
         &air,
         &proof.proof,
-        &[],
+        &public_values,
         Some(&proof.preprocessed_vk),
     )
     .is_ok()
