@@ -4,12 +4,12 @@ use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use crate::ops::bb;
 
 use super::columns::{
-    AIR_WIDTH, BIT_A_BASE, BIT_B_BASE, BIT_C_BASE, BIT_CH_BASE, BIT_E_BASE, BIT_F_BASE, BIT_G_BASE,
-    BIT_MAJ_BASE, BIT_SIGMA0_BASE, BIT_SIGMA1_BASE, CARRY_A_BASE, CARRY_E_BASE, CARRY_T1_BASE,
-    CARRY_T2_BASE, LAG_COUNT, LIMBS_PER_WORD, RANGE_BITS_PER_SOURCE, RANGE_SOURCES,
-    SCHED_CARRY_BASE, WORD_A, WORD_B, WORD_C, WORD_CH, WORD_E, WORD_F, WORD_G, WORD_K, WORD_MAJ,
-    WORD_SIGMA0, WORD_SIGMA1, WORD_T1, WORD_T2, WORD_W, lag_col, lag_limb_col, limb_col,
-    range_bit_col, range_source_col,
+    AIR_WIDTH, BIT_A_BASE, BIT_B_BASE, BIT_C_BASE, BIT_E_BASE, BIT_F_BASE, BIT_G_BASE,
+    CARRY_A_BASE, CARRY_E_BASE, CARRY_T1_BASE, CARRY_T2_BASE, LAG_COUNT, LAG_LIMB_BASE,
+    LIMBS_PER_WORD, RANGE_BITS_PER_SOURCE, RANGE_SOURCES, SCHED_CARRY_BASE, WORD_A, WORD_B, WORD_C,
+    WORD_CH, WORD_E, WORD_F, WORD_G, WORD_K, WORD_MAJ, WORD_SIGMA0, WORD_SIGMA1, WORD_T1, WORD_T2,
+    WORD_W, carry_bit_col, carry_bit_width, lag_limb_col, limb_col, range_bit_col,
+    range_source_col,
 };
 
 pub(super) fn set_word_limbs(row: &mut [BabyBear; AIR_WIDTH], word: usize, value: u64) {
@@ -21,7 +21,6 @@ pub(super) fn set_word_limbs(row: &mut [BabyBear; AIR_WIDTH], word: usize, value
 
 pub(super) fn set_lag_words(row: &mut [BabyBear; AIR_WIDTH], lags: &[u64; LAG_COUNT]) {
     for (lag, value) in lags.iter().copied().enumerate() {
-        row[lag_col(lag)] = bb(value);
         let limbs = u64_to_limbs(value);
         for (limb, limb_value) in limbs.into_iter().enumerate() {
             row[lag_limb_col(lag, limb)] = BabyBear::from_u16(limb_value);
@@ -45,6 +44,23 @@ pub(super) fn set_range_bits(row: &mut [BabyBear; AIR_WIDTH]) {
         let x = row[value_col].as_canonical_u32();
         for bit in 0..RANGE_BITS_PER_SOURCE {
             row[range_bit_col(source, bit)] = BabyBear::from_bool(((x >> bit) & 1) == 1);
+        }
+    }
+}
+
+pub(super) fn set_carry_bits(row: &mut [BabyBear; AIR_WIDTH]) {
+    for carry_col in CARRY_T1_BASE..LAG_LIMB_BASE {
+        let width = carry_bit_width(carry_col);
+        let x = row[carry_col].as_canonical_u32();
+        for bit in 0..width {
+            row[carry_bit_col(carry_col, bit)] = BabyBear::from_bool(((x >> bit) & 1) == 1);
+        }
+    }
+    for carry_col in SCHED_CARRY_BASE..BIT_A_BASE {
+        let width = carry_bit_width(carry_col);
+        let x = row[carry_col].as_canonical_u32();
+        for bit in 0..width {
+            row[carry_bit_col(carry_col, bit)] = BabyBear::from_bool(((x >> bit) & 1) == 1);
         }
     }
 }
@@ -101,10 +117,6 @@ pub(super) fn set_helper_bits(row: &mut [BabyBear; AIR_WIDTH]) {
         (WORD_E, BIT_E_BASE),
         (WORD_F, BIT_F_BASE),
         (WORD_G, BIT_G_BASE),
-        (WORD_SIGMA0, BIT_SIGMA0_BASE),
-        (WORD_SIGMA1, BIT_SIGMA1_BASE),
-        (WORD_CH, BIT_CH_BASE),
-        (WORD_MAJ, BIT_MAJ_BASE),
     ] {
         let value = decode_word_from_inline(row, word);
         for i in 0..64 {

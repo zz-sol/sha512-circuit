@@ -2,9 +2,46 @@ use crate::constants::{INITIAL_STATE, K};
 use crate::ops::{big_sigma0, big_sigma1, ch, maj, small_sigma0, small_sigma1};
 use crate::trace::BlockTrace;
 
+/// Reference SHA-512 implementation and AIR witness generator.
+///
+/// `Sha512Circuit` is a namespace (a zero-sized struct with only associated functions)
+/// that groups three layers of functionality:
+///
+/// 1. **Reference SHA-512** — [`hash`](Sha512Circuit::hash) produces the standard
+///    64-byte digest for any message, matching the FIPS 180-4 specification.
+///
+/// 2. **Block-level witness** — [`compress_block`](Sha512Circuit::compress_block) runs
+///    a single 128-byte block compression and records every intermediate value in a
+///    [`BlockTrace`], which is the prover's witness.
+///
+/// 3. **AIR trace generation** — [`build_plonky3_air_trace`](Sha512Circuit::build_plonky3_air_trace)
+///    and [`build_plonky3_preprocessed_trace_from_instance`](Sha512Circuit::build_plonky3_preprocessed_trace_from_instance)
+///    convert a `BlockTrace` into the column matrices consumed by Plonky3.
+///
+/// Most users should interact with the higher-level proof API functions
+/// ([`prove_single_block`](crate::prove_single_block), [`prove_message`](crate::prove_message), etc.)
+/// rather than calling `Sha512Circuit` directly.
 pub struct Sha512Circuit;
 
 impl Sha512Circuit {
+    /// Computes the SHA-512 digest of `message`.
+    ///
+    /// This is a full, standard-compliant SHA-512 hash: the message is padded per
+    /// FIPS 180-4 §5.1.2, split into 128-byte blocks, and each block is compressed
+    /// in sequence starting from [`crate::INITIAL_STATE`].
+    ///
+    /// # Returns
+    ///
+    /// The 64-byte (512-bit) digest as a big-endian byte array.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use sha512_circuit::Sha512Circuit;
+    ///
+    /// let digest = Sha512Circuit::hash(b"abc");
+    /// // digest equals the well-known SHA-512("abc") test vector
+    /// ```
     pub fn hash(message: &[u8]) -> [u8; 64] {
         let mut state = INITIAL_STATE;
         for block in Self::padded_blocks(message) {
@@ -15,6 +52,19 @@ impl Sha512Circuit {
         Self::state_to_digest(&state)
     }
 
+    /// Pads `message` per the SHA-512 Merkle–Damgård spec and returns the resulting blocks.
+    ///
+    /// The padding algorithm (FIPS 180-4 §5.1.2):
+    /// 1. Append a single `0x80` byte.
+    /// 2. Append zero bytes until `(length + 16) % 128 == 0`.
+    /// 3. Append the original bit-length as a 128-bit big-endian integer.
+    ///
+    /// The resulting byte slice is guaranteed to be a multiple of 128 bytes; this
+    /// function splits it into fixed-size `[u8; 128]` blocks.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec` of 128-byte blocks, length ≥ 1 (even the empty message produces one block).
     pub fn padded_blocks(message: &[u8]) -> Vec<[u8; 128]> {
         pad_message(message)
             .chunks_exact(128)
@@ -22,6 +72,11 @@ impl Sha512Circuit {
             .collect()
     }
 
+    /// Serialises a SHA-512 working state to a 64-byte big-endian digest.
+    ///
+    /// Each of the 8 `u64` words is written in big-endian byte order, yielding
+    /// 8 × 8 = 64 bytes.  The result is identical to the final output of
+    /// [`hash`](Sha512Circuit::hash) when called with the post-feed-forward state.
     pub fn state_to_digest(state: &[u64; 8]) -> [u8; 64] {
         let mut out = [0_u8; 64];
         for (chunk, word) in out.chunks_exact_mut(8).zip(state.iter().copied()) {
@@ -30,6 +85,27 @@ impl Sha512Circuit {
         out
     }
 
+    /// Runs one SHA-512 block compression and records the full execution trace.
+    ///
+    /// Given an 8-word chaining `state` and a 128-byte `block`, this function:
+    ///
+    /// 1. Parses `block` into 16 big-endian 64-bit words W[0..15].
+    /// 2. Expands the message schedule to W[0..79] using the σ0/σ1 recurrence.
+    /// 3. Executes 80 rounds of the SHA-512 compression function, recording the
+    ///    working state `[a,b,c,d,e,f,g,h]` after each round.
+    /// 4. Applies the feed-forward addition: `output[i] = state[i] + working[i]` (mod 2⁶⁴).
+    ///
+    /// # Returns
+    ///
+    /// A [`BlockTrace`] containing:
+    /// * `input_state`  — a copy of the input `state`.
+    /// * `words`        — the full 80-word message schedule.
+    /// * `round_states` — working state at each of the 81 boundaries (before round 0
+    ///   through after round 79).
+    /// * `output_state` — the chaining value after feed-forward.
+    ///
+    /// The `BlockTrace` is the prover's witness and is consumed by
+    /// [`build_plonky3_air_trace`](Sha512Circuit::build_plonky3_air_trace).
     pub fn compress_block(state: &[u64; 8], block: &[u8; 128]) -> BlockTrace {
         let mut words = [0_u64; 80];
         for (i, chunk) in block.chunks_exact(8).enumerate() {
@@ -93,6 +169,22 @@ impl Sha512Circuit {
         }
     }
 
+    /// Algebraically validates a [`BlockTrace`] without generating a zero-knowledge proof.
+    ///
+    /// Checks:
+    /// * The message schedule recurrence W\[i\] = σ1(W\[i−2\]) + W\[i−7\] + σ0(W\[i−15\]) + W\[i−16\]
+    ///   for i in 16..80.
+    /// * `round_states[0]` equals `input_state`.
+    /// * Every transition `round_states[i] → round_states[i+1]` satisfies the SHA-512
+    ///   round equations (T1, T2, register shifts).
+    /// * `output_state` equals `input_state + round_states[80]` component-wise mod 2⁶⁴.
+    ///
+    /// # Returns
+    ///
+    /// `true` if all checks pass, `false` if any constraint is violated.
+    ///
+    /// This function is primarily useful for unit tests and debugging.  A `true` return
+    /// value does **not** constitute a zero-knowledge proof of correct execution.
     pub fn verify_block_trace(trace: &BlockTrace) -> bool {
         for i in 16..80 {
             let expected = small_sigma1(trace.words[i - 2])
@@ -143,6 +235,13 @@ impl Sha512Circuit {
     }
 }
 
+/// Pads `message` to a multiple of 128 bytes following the SHA-512 Merkle–Damgård scheme.
+///
+/// Layout after padding:
+/// ```text
+/// [message bytes] [0x80] [zero bytes …] [128-bit big-endian bit-length]
+/// ```
+/// The total length is always a multiple of 128 and at least 128 bytes.
 fn pad_message(message: &[u8]) -> Vec<u8> {
     let bit_len = (message.len() as u128) * 8;
 

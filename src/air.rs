@@ -1,3 +1,32 @@
+//! Plonky3 AIR definition for the SHA-512 compression circuit.
+//!
+//! This module stitches together the column layout ([`columns`]), constraint logic
+//! ([`constraints`]), and trace-building utilities ([`trace_builder`]) into a single
+//! [`Sha512RoundAir`] that Plonky3 can prove and verify.
+//!
+//! ## Trace layout (128 rows × `AIR_WIDTH` columns)
+//!
+//! | Row range | Role |
+//! |-----------|------|
+//! | 0 – 79    | One SHA-512 compression round per row |
+//! | 80        | Post-round-80 working state (before feed-forward); public values are bound here |
+//! | 81 – 127  | Padding rows — degenerate register-shift rows with W = K = 0 |
+//!
+//! ## Public values
+//!
+//! The 8 public values are `round_states[80]` (working state after all 80 rounds).
+//! The verifier reconstructs `output_state` externally as `input_state + round_states[80]`
+//! (mod 2⁶⁴), so the AIR does **not** constrain the feed-forward addition.
+//!
+//! ## Preprocessed trace
+//!
+//! An instance-specific preprocessed trace is committed separately from the main trace.
+//! It carries:
+//! * The initial working state (a..h) — constant across all rows, used for boundary binding.
+//! * The round constant K[i] for each round row.
+//! * W[0..15] for the initial 16 rows (before the schedule recurrence takes over).
+//! * Four selector columns controlling which constraint groups are active per row.
+
 #[path = "air/columns.rs"]
 mod columns;
 #[path = "air/constraints.rs"]
@@ -21,12 +50,41 @@ use columns::*;
 use constraints::*;
 use trace_builder::*;
 
+/// The Plonky3 AIR for SHA-512 block compression.
+///
+/// `Sha512RoundAir` implements the [`Air`] trait and holds the instance-specific
+/// preprocessed trace.  The preprocessed trace commits to the initial working state,
+/// the 80 round constants, the first 16 message schedule words, and four selector
+/// columns.  This allows the STARK verifier to confirm that the prover used the
+/// correct instance without re-running the SHA-512 compression.
+///
+/// ## Construction
+///
+/// ```rust,no_run
+/// use sha512_circuit::Sha512Circuit;
+/// use sha512_circuit::Sha512RoundAir;
+///
+/// let initial_state = sha512_circuit::INITIAL_STATE;
+/// let block = [0u8; 128];
+/// let preprocessed = Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(
+///     &initial_state, &block,
+/// );
+/// let air = Sha512RoundAir::new(preprocessed);
+/// ```
+///
+/// In practice you will not construct this directly — the [`prove_single_block`](crate::prove_single_block)
+/// family of functions handle it for you.
 #[derive(Clone, Debug)]
 pub struct Sha512RoundAir {
     preprocessed: RowMajorMatrix<BabyBear>,
 }
 
 impl Sha512RoundAir {
+    /// Creates a new [`Sha512RoundAir`] from a precomputed preprocessed trace.
+    ///
+    /// The `preprocessed` matrix must have been produced by
+    /// [`Sha512Circuit::build_plonky3_preprocessed_trace_from_instance`] for the same
+    /// `(initial_state, block)` pair that will be proved / verified.
     pub fn new(preprocessed: RowMajorMatrix<BabyBear>) -> Self {
         Self { preprocessed }
     }
@@ -101,10 +159,6 @@ where
             (WORD_E, BIT_E_BASE),
             (WORD_F, BIT_F_BASE),
             (WORD_G, BIT_G_BASE),
-            (WORD_SIGMA0, BIT_SIGMA0_BASE),
-            (WORD_SIGMA1, BIT_SIGMA1_BASE),
-            (WORD_CH, BIT_CH_BASE),
-            (WORD_MAJ, BIT_MAJ_BASE),
         ] {
             for bit in 0..64 {
                 builder.assert_bool(local[base + bit].clone());
@@ -112,6 +166,10 @@ where
             builder.assert_eq(local[word].clone(), pack_bits::<AB>(&local, base));
         }
 
+        let mut sigma0_word = AB::Expr::ZERO;
+        let mut sigma1_word = AB::Expr::ZERO;
+        let mut ch_word = AB::Expr::ZERO;
+        let mut maj_word = AB::Expr::ZERO;
         for bit in 0..64 {
             let a = local[BIT_A_BASE + bit].clone();
             let b = local[BIT_B_BASE + bit].clone();
@@ -119,42 +177,37 @@ where
             let e = local[BIT_E_BASE + bit].clone();
             let f = local[BIT_F_BASE + bit].clone();
             let g = local[BIT_G_BASE + bit].clone();
-            let round_sel = local_prep[PREP_ROUND_SELECTOR_COL].clone();
 
             let sigma0 = xor3_expr::<AB>(
                 local[BIT_A_BASE + ((bit + 28) % 64)].clone().into(),
                 local[BIT_A_BASE + ((bit + 34) % 64)].clone().into(),
                 local[BIT_A_BASE + ((bit + 39) % 64)].clone().into(),
             );
-            builder
-                .assert_zero(round_sel.clone() * (local[BIT_SIGMA0_BASE + bit].clone() - sigma0));
 
             let sigma1 = xor3_expr::<AB>(
                 local[BIT_E_BASE + ((bit + 14) % 64)].clone().into(),
                 local[BIT_E_BASE + ((bit + 18) % 64)].clone().into(),
                 local[BIT_E_BASE + ((bit + 41) % 64)].clone().into(),
             );
-            builder
-                .assert_zero(round_sel.clone() * (local[BIT_SIGMA1_BASE + bit].clone() - sigma1));
 
             let ch_expr = e.clone() * f.clone() + (AB::Expr::ONE - e) * g.clone();
-            builder.assert_zero(round_sel.clone() * (local[BIT_CH_BASE + bit].clone() - ch_expr));
-
             let ab = a.clone() * b.clone();
             let ac = a.clone() * c.clone();
             let bc = b.clone() * c.clone();
             let abc = a * b * c;
             let maj_expr = ab + ac + bc - abc * BabyBear::TWO;
-            builder.assert_zero(round_sel.clone() * (local[BIT_MAJ_BASE + bit].clone() - maj_expr));
-        }
 
-        for lag in 0..LAG_COUNT {
-            let packed = local[lag_limb_col(lag, 0)].clone()
-                + local[lag_limb_col(lag, 1)].clone() * two16
-                + local[lag_limb_col(lag, 2)].clone() * two32
-                + local[lag_limb_col(lag, 3)].clone() * two48;
-            builder.assert_eq(local[lag_col(lag)].clone(), packed);
+            let bit_weight = BabyBear::from_u64(1_u64 << bit);
+            sigma0_word += sigma0 * bit_weight;
+            sigma1_word += sigma1 * bit_weight;
+            ch_word += ch_expr * bit_weight;
+            maj_word += maj_expr * bit_weight;
         }
+        let round_sel = local_prep[PREP_ROUND_SELECTOR_COL].clone();
+        builder.assert_zero(round_sel.clone() * (local[WORD_SIGMA0].clone() - sigma0_word));
+        builder.assert_zero(round_sel.clone() * (local[WORD_SIGMA1].clone() - sigma1_word));
+        builder.assert_zero(round_sel.clone() * (local[WORD_CH].clone() - ch_word));
+        builder.assert_zero(round_sel * (local[WORD_MAJ].clone() - maj_word));
 
         for src in 0..RANGE_SOURCES {
             let mut packed = AB::Expr::ZERO;
@@ -228,10 +281,6 @@ where
             );
         }
 
-        transition.assert_eq(next[lag_col(0)].clone(), local[WORD_W].clone());
-        for lag in 1..LAG_COUNT {
-            transition.assert_eq(next[lag_col(lag)].clone(), local[lag_col(lag - 1)].clone());
-        }
         for lag in 0..LAG_COUNT {
             for limb in 0..LIMBS_PER_WORD {
                 let expected = if lag == 0 {
@@ -338,6 +387,25 @@ impl AirBuilderWithPublicValues for AirConstraintChecker {
 }
 
 impl Sha512Circuit {
+    /// Builds the instance-specific preprocessed trace matrix.
+    ///
+    /// The preprocessed trace has the same dimensions as the main trace
+    /// (128 rows × `AIR_WIDTH` columns) but only a small subset of columns are
+    /// populated.  All other cells are zero.  Populated columns:
+    ///
+    /// * `WORD_K`                    — round constant K\[i\] in rows 0..80; zero in rows 80..127.
+    /// * `WORD_W`                    — W\[i\] in rows 0..15 (bound by `PREP_INIT_W_SELECTOR_COL`).
+    /// * `WORD_A..WORD_H`            — initial state, constant across **all** 128 rows;
+    ///   the first-row boundary constraint uses these to bind the main trace.
+    /// * `PREP_ROUND_SELECTOR_COL`   — 1 in rows 0..79, 0 elsewhere.
+    /// * `PREP_INIT_W_SELECTOR_COL`  — 1 in rows 0..15, 0 elsewhere.
+    /// * `PREP_SCHEDULE_SELECTOR_COL`— 1 in rows 16..79, 0 elsewhere.
+    /// * `PREP_FINAL_SELECTOR_COL`   — 1 in row 80 only.
+    ///
+    /// # Panics
+    ///
+    /// Panics internally if `compress_block` or `build_plonky3_air_trace` fails
+    /// (should not occur for valid inputs).
     pub fn build_plonky3_preprocessed_trace_from_instance(
         initial_state: &[u64; 8],
         block: &[u8; 128],
@@ -368,6 +436,41 @@ impl Sha512Circuit {
         RowMajorMatrix::new(values, AIR_WIDTH)
     }
 
+    /// Builds the full AIR witness (main trace) from a [`BlockTrace`].
+    ///
+    /// Produces a 128-row × `AIR_WIDTH`-column [`RowMajorMatrix`] in BabyBear.
+    ///
+    /// ## Row structure
+    ///
+    /// * **Rows 0–79** (round rows): For each SHA-512 round `i`, fills in the
+    ///   working state words (a..h, W, K, Σ0, Σ1, Ch, Maj, T1, T2), their 16-bit
+    ///   limb decompositions, carry values for each limb-wise addition (T1, T2, A, E,
+    ///   and schedule), 64-bit Boolean decompositions for bitwise operations, and the
+    ///   corresponding range-proof bit columns.
+    ///
+    /// * **Row 80** (final state row): Contains only the 8 working-state words
+    ///   (`round_states[80]`) together with their limb decompositions, the lag history
+    ///   for the schedule, and degenerate "padding helpers" (W = K = 0, all carry /
+    ///   bit columns zeroed).  This row's words are bound to the 8 public values by
+    ///   the `PREP_FINAL_SELECTOR_COL` constraint.
+    ///
+    /// * **Rows 81–127** (padding rows): Degenerate rows that extend the trace to
+    ///   the required power-of-two length (128).  The register-shift transition
+    ///   constraints still hold here (b ← a, etc.), but W = K = 0 and all non-state
+    ///   helper columns are zero.
+    ///
+    /// ## Column groups
+    ///
+    /// | Group | Column range | Purpose |
+    /// |-------|-------------|---------|
+    /// | Words | 0–15 | Working state + schedule intermediates |
+    /// | Limbs | 16–79 | 4 × 16-bit decomposition per word |
+    /// | Carries | 80–95 | Per-limb carries for T1, T2, A, E additions |
+    /// | Lag limbs | 96–159 | Previous 16 W values, 4 limbs each |
+    /// | Sched carries | 160–163 | Carries for the W recurrence |
+    /// | Bits | 164–547 | 64-bit Boolean decompositions for a,b,c,e,f,g |
+    /// | Range bits | 548–2595 | 16-bit range proofs for word/lag limbs |
+    /// | Carry bits | 2596–2627 | Minimal-width carry bit decompositions |
     pub fn build_plonky3_air_trace(trace: &BlockTrace) -> RowMajorMatrix<BabyBear> {
         let mut values = Vec::with_capacity(TRACE_ROWS * AIR_WIDTH);
         let mut lags = [0_u64; LAG_COUNT];
@@ -417,6 +520,7 @@ impl Sha512Circuit {
             set_carries(&mut row, CARRY_A_BASE, carry_a);
             set_carries(&mut row, CARRY_E_BASE, carry_e);
             set_carries(&mut row, SCHED_CARRY_BASE, sched_carries);
+            set_carry_bits(&mut row);
             set_range_bits(&mut row);
 
             values.extend(row);
@@ -433,6 +537,7 @@ impl Sha512Circuit {
         set_lag_words(&mut row80, &lags);
         set_helper_bits(&mut row80);
         seed_padding_helpers(&mut row80);
+        set_carry_bits(&mut row80);
         set_range_bits(&mut row80);
         values.extend(row80);
         advance_lags(&mut lags, 0);
@@ -470,6 +575,7 @@ impl Sha512Circuit {
             if row_idx != TRACE_ROWS - 1 {
                 seed_padding_helpers(&mut row);
             }
+            set_carry_bits(&mut row);
             set_range_bits(&mut row);
             values.extend(row);
             advance_lags(&mut lags, 0);
@@ -479,6 +585,22 @@ impl Sha512Circuit {
         RowMajorMatrix::new(values, AIR_WIDTH)
     }
 
+    /// Algebraically checks all AIR constraints on `main_trace` for the given instance.
+    ///
+    /// This is a deterministic, non-ZK check that evaluates every AIR constraint at
+    /// every row without generating or verifying a STARK proof.  It is primarily useful
+    /// for unit tests and debugging.
+    ///
+    /// The function:
+    /// 1. Validates the trace dimensions (must be 128 rows × `AIR_WIDTH` columns).
+    /// 2. Builds the preprocessed trace from `(initial_state, block)`.
+    /// 3. Runs the SHA-512 compression to compute the 8 public values.
+    /// 4. Evaluates [`Sha512RoundAir::eval`] row by row using an internal
+    ///    `AirConstraintChecker` that records any constraint violations.
+    ///
+    /// # Returns
+    ///
+    /// `true` if all constraints pass, `false` if any constraint is violated.
     pub fn verify_plonky3_air_trace_with_instance(
         main_trace: &RowMajorMatrix<BabyBear>,
         initial_state: &[u64; 8],
@@ -551,7 +673,7 @@ fn verify_with_preprocessed(
 
 #[cfg(test)]
 pub(crate) use columns::{
-    AIR_WIDTH_FOR_TESTS, LAG_BASE_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS,
+    AIR_WIDTH_FOR_TESTS, LAG_LIMB_BASE_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS,
     RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, SCHED_CARRY_BASE_FOR_TESTS,
     WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS, WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS,
     WORD_W_FOR_TESTS,

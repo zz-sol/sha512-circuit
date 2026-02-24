@@ -7,8 +7,8 @@ A Plonky3 STARK circuit for SHA-512 block compression, written in Rust. Includes
 The library proves that a SHA-512 compression was computed correctly, without revealing the computation details beyond the public instance (initial state + message block) and the final working state.
 
 - **Field**: BabyBear (2^31 − 2^27 + 1)
-- **Polynomial commitment**: FRI over BabyBear with Keccak256 Merkle trees
-- **Trace size**: 128 rows × ~1280 columns per 128-byte block
+- **Polynomial commitment**: FRI over BabyBear with Keccak-256 Merkle trees
+- **Trace size**: 128 rows × 2628 columns per 128-byte block
 - **Proof size**: ~200–400 KB per block (varies with FRI parameters)
 
 ## Usage
@@ -20,7 +20,17 @@ use sha512_circuit::{
     Sha512SingleBlockInstance, prove_single_block, verify_single_block_proof,
     serialize_single_block_proof, deserialize_single_block_proof,
 };
-use sha512_circuit::INITIAL_STATE;
+
+const INITIAL_STATE: [u64; 8] = [
+    0x6a09e667f3bcc908,
+    0xbb67ae8584caa73b,
+    0x3c6ef372fe94f82b,
+    0xa54ff53a5f1d36f1,
+    0x510e527fade682d1,
+    0x9b05688c2b3e6c1f,
+    0x1f83d9abfb41bd6b,
+    0x5be0cd19137e2179,
+];
 
 let instance = Sha512SingleBlockInstance {
     initial_state: INITIAL_STATE,
@@ -41,7 +51,17 @@ let proof2 = deserialize_single_block_proof(&bytes).unwrap();
 use sha512_circuit::{
     Sha512MessageInstance, prove_message, verify_message_proof,
 };
-use sha512_circuit::INITIAL_STATE;
+
+const INITIAL_STATE: [u64; 8] = [
+    0x6a09e667f3bcc908,
+    0xbb67ae8584caa73b,
+    0x3c6ef372fe94f82b,
+    0xa54ff53a5f1d36f1,
+    0x510e527fade682d1,
+    0x9b05688c2b3e6c1f,
+    0x1f83d9abfb41bd6b,
+    0x5be0cd19137e2179,
+];
 
 let instance = Sha512MessageInstance {
     initial_state: INITIAL_STATE,
@@ -77,18 +97,18 @@ let proof = prove_single_block_with_settings(instance, settings);
 | 80 | Final working state `(a..h)` after round 80 |
 | 81–127 | Padding rows (degenerate rounds, W=K=0) to reach 2^7 |
 
-### Column layout (~1280 columns per row)
+### Column layout (2628 columns per row)
 
 | Range | Content |
 |-------|---------|
 | 0–15 | Main words: `a, b, c, d, e, f, g, h, W, K, Σ0, Σ1, Ch, Maj, T1, T2` |
 | 16–79 | 16-bit limb decompositions (4 limbs × 16 words) |
 | 80–95 | Carry columns for T1, T2, A, E additions (4 limbs each) |
-| 96–111 | Lag words W[i−1] … W[i−16] |
-| 112–175 | Lag limbs (4 limbs × 16 lags) |
-| 176–179 | Schedule carries (4 limbs) |
-| 180–819 | Bit decompositions: 64 bits × 10 words (A, B, C, E, F, G, Σ0, Σ1, Ch, Maj) |
-| 820–… | Range-proof bit columns: 16 bits × (word limbs + lag limbs + carries) |
+| 96–159 | Lag limbs (4 limbs × 16 lags) |
+| 160–163 | Schedule carries (4 limbs) |
+| 164–547 | Bit decompositions: 64 bits × 6 words (A, B, C, E, F, G) |
+| 548–2595 | Range-proof bit columns: 16 bits × (word limbs + lag limbs) |
+| 2596–2627 | Carry-bit columns (minimal-width per carry type) |
 
 ### Preprocessed (instance-dependent) trace
 
@@ -123,7 +143,7 @@ This addition is performed by the verifier (not inside the STARK). In the multi-
 ## Known Limitations
 
 - **Not audited.** This is a prototype and has not undergone a security review.
-- **Test-grade FRI parameters by default.** The default `log_final_poly_len: 2` provides minimal concrete security. Production use requires tuning `Sha512ProofSettings` with appropriate blowup factor and query count, using non-test FRI setup.
+- **Test-grade FRI parameters by default.** The current setup uses `create_test_fri_params` and only exposes `log_final_poly_len`/`rng_seed`; production use needs hardened FRI parameterization.
 - **No recursive proof composition.** Multi-block proofs are a flat list of independent single-block proofs; proof size scales linearly with the number of blocks.
 - **Soundness depends on correct instance wiring by the caller.** The proof binds to `(initial_state, block)`; a caller that passes wrong instance values to the verifier will get incorrect results.
 

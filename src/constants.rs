@@ -1,3 +1,12 @@
+/// The SHA-512 initial hash values (IV).
+///
+/// These are the first 64 bits of the fractional parts of the square roots of the first
+/// eight prime numbers, as specified in FIPS 180-4 §5.3.5.
+///
+/// Use this as the `initial_state` for the first block of a fresh SHA-512 computation.
+/// When chaining blocks (e.g. in [`crate::prove_message`]), the output state of each block
+/// becomes the input state of the next block; callers do not need to supply `INITIAL_STATE`
+/// for subsequent blocks directly — the multi-block API handles chaining automatically.
 pub const INITIAL_STATE: [u64; 8] = [
     0x6a09e667f3bcc908,
     0xbb67ae8584caa73b,
@@ -9,6 +18,13 @@ pub const INITIAL_STATE: [u64; 8] = [
     0x5be0cd19137e2179,
 ];
 
+/// The 80 SHA-512 round constants K[0..79].
+///
+/// These are the first 64 bits of the fractional parts of the cube roots of the first
+/// eighty prime numbers, as specified in FIPS 180-4 §4.2.3.
+///
+/// Each constant is consumed by one compression round: round `i` uses `K[i]` when
+/// computing T1 = h + Σ1(e) + Ch(e,f,g) + K[i] + W[i].
 pub(crate) const K: [u64; 80] = [
     0x428a2f98d728ae22,
     0x7137449123ef65cd,

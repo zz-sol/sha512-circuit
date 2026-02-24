@@ -64,10 +64,10 @@ fn main() {
     let sizes = [32_usize, 64, 128, 256, 512, 1024];
 
     println!(
-        "{:<10} {:>16} {:>20} {:>16} {:>16}",
-        "input", "proving(ms)", "verification(ms)", "circuit size", "proof size"
+        "{:<10} {:>16} {:>20} {:>8} {:>8} {:>16} {:>16}",
+        "input", "proving(ms)", "verification(ms)", "rows", "cols", "circuit size", "proof size"
     );
-    println!("{}", "-".repeat(84));
+    println!("{}", "-".repeat(110));
 
     for size in sizes {
         let message: Vec<u8> = (0..size).map(|i| ((i * 17 + 23) & 0xff) as u8).collect();
@@ -83,6 +83,8 @@ fn main() {
         let mut vks: Vec<PreVk> = Vec::with_capacity(blocks.len());
         let mut total_circuit_size = 0_usize;
         let mut total_proof_size = 0_usize;
+        let mut total_rows = 0_usize;
+        let mut circuit_cols = 0_usize;
 
         for block in &blocks {
             let trace = Sha512Circuit::compress_block(&state, block);
@@ -104,6 +106,8 @@ fn main() {
 
             total_circuit_size += main_trace.width() * main_trace.height();
             total_proof_size += bincode::serialize(&proof).expect("serialize proof").len();
+            total_rows += main_trace.height();
+            circuit_cols = main_trace.width();
 
             proofs.push(proof);
             vks.push(vk);
@@ -140,10 +144,12 @@ fn main() {
         let verification_time = verify_start.elapsed();
 
         println!(
-            "{:<10} {:>16.3} {:>20.3} {:>16} {:>16}",
+            "{:<10} {:>16.3} {:>20.3} {:>8} {:>8} {:>16} {:>16}",
             format!("{} B", size),
             proving_time.as_secs_f64() * 1000.0,
             verification_time.as_secs_f64() * 1000.0,
+            total_rows,
+            circuit_cols,
             total_circuit_size,
             format!("{} B", total_proof_size),
         );

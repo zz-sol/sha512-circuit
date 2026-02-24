@@ -3,7 +3,7 @@ use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
 
 use super::columns::{
-    LIMBS_PER_WORD, SCHED_CARRY_BASE, WORD_W, carry_range_source, lag_limb_col,
+    LIMBS_PER_WORD, SCHED_CARRY_BASE, WORD_W, carry_bit_col, carry_bit_width, lag_limb_col,
     lag_limb_range_source, limb_col, range_bit_col,
 };
 
@@ -105,26 +105,22 @@ fn constrain_carry_max<AB: AirBuilder<F = BabyBear>>(
     carry_col: usize,
     max: u32,
 ) {
-    let source = carry_range_source(carry_col);
-    let b0 = row[range_bit_col(source, 0)].clone();
-    let b1 = row[range_bit_col(source, 1)].clone();
-    let b2 = row[range_bit_col(source, 2)].clone();
+    let width = carry_bit_width(carry_col);
+    let mut packed = AB::Expr::ZERO;
+    for bit in 0..width {
+        let b = row[carry_bit_col(carry_col, bit)].clone();
+        builder.assert_bool(b.clone());
+        packed += b * BabyBear::from_u32(1 << bit);
+    }
+    builder.assert_eq(row[carry_col].clone(), packed);
 
     match max {
-        1 => {
-            for bit in 1..16 {
-                builder.assert_zero(row[range_bit_col(source, bit)].clone());
-            }
-        }
-        3 => {
-            for bit in 2..16 {
-                builder.assert_zero(row[range_bit_col(source, bit)].clone());
-            }
-        }
+        1 => {}
+        3 => {}
         4 => {
-            for bit in 3..16 {
-                builder.assert_zero(row[range_bit_col(source, bit)].clone());
-            }
+            let b0 = row[carry_bit_col(carry_col, 0)].clone();
+            let b1 = row[carry_bit_col(carry_col, 1)].clone();
+            let b2 = row[carry_bit_col(carry_col, 2)].clone();
             builder.assert_zero(b2 * (b1 + b0));
         }
         _ => unreachable!("unsupported carry bound"),
