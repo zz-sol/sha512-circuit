@@ -218,3 +218,23 @@ fn serialization_roundtrip_instance_and_proof() {
     let message_proof_back = deserialize_multi_block_proof(&message_proof_bytes).expect("decode");
     assert!(verify_message_proof(&message_instance, &message_proof_back));
 }
+
+#[test]
+fn deserialize_single_block_proof_rejects_oversized_input() {
+    let bytes = vec![0_u8; (16 * 1024 * 1024) + 1];
+    assert!(deserialize_single_block_proof(&bytes).is_err());
+}
+
+#[test]
+fn deserialize_multi_block_proof_rejects_oversized_input() {
+    let bytes = vec![0_u8; (64 * 1024 * 1024) + 1];
+    assert!(deserialize_multi_block_proof(&bytes).is_err());
+}
+
+#[test]
+fn deserialize_message_instance_rejects_oversized_declared_length() {
+    let mut bytes = vec![0_u8; 72];
+    bytes[64..72].copy_from_slice(&u64::MAX.to_be_bytes());
+    let err = deserialize_message_instance(&bytes).expect_err("should fail");
+    assert!(err.contains("exceeds configured size limit"));
+}

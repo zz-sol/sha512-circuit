@@ -1,3 +1,4 @@
+use bincode::Options;
 use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
 use p3_challenger::DuplexChallenger;
 use p3_commit::{ExtensionMmcs, Pcs as PcsTrait};
@@ -32,6 +33,11 @@ type Dft = Radix2DitParallel<Val>;
 type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type Commitment = <Pcs as PcsTrait<Challenge, Challenger>>::Commitment;
 const TRACE_DEGREE_BITS: usize = 7;
+const MAX_MESSAGE_INSTANCE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SINGLE_PROOF_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MULTI_PROOF_BYTES: usize = 64 * 1024 * 1024;
+const MAX_INNER_PROOF_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MULTI_BLOCK_PROOFS: usize = 4096;
 
 pub type Sha512StarkConfig = StarkConfig<Pcs, Challenge, Challenger>;
 pub type Sha512StarkProof = Proof<Sha512StarkConfig>;
@@ -324,6 +330,9 @@ pub fn deserialize_message_instance(bytes: &[u8]) -> Result<Sha512MessageInstanc
     }
 
     let len = u64::from_be_bytes(bytes[64..72].try_into().expect("length field")) as usize;
+    if len > MAX_MESSAGE_INSTANCE_BYTES {
+        return Err("message instance exceeds configured size limit".to_string());
+    }
     if bytes.len() != 72 + len {
         return Err("message instance length mismatch".to_string());
     }
@@ -346,10 +355,25 @@ pub fn serialize_single_block_proof(proof: &Sha512SingleBlockProof) -> Vec<u8> {
 }
 
 pub fn deserialize_single_block_proof(bytes: &[u8]) -> Result<Sha512SingleBlockProof, String> {
+    if bytes.len() > MAX_SINGLE_PROOF_BYTES {
+        return Err("serialized single-block proof exceeds configured size limit".to_string());
+    }
+    let bincode_opts = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .with_limit(MAX_SINGLE_PROOF_BYTES as u64);
     let serializable: SerializableSingleBlockProof =
-        bincode::deserialize(bytes).map_err(|e| e.to_string())?;
-    let proof: Sha512StarkProof =
-        bincode::deserialize(&serializable.proof_bytes).map_err(|e| e.to_string())?;
+        bincode_opts.deserialize(bytes).map_err(|e| e.to_string())?;
+    if serializable.proof_bytes.len() > MAX_INNER_PROOF_BYTES {
+        return Err("inner single-block proof exceeds configured size limit".to_string());
+    }
+    let inner_opts = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .with_limit(MAX_INNER_PROOF_BYTES as u64);
+    let proof: Sha512StarkProof = inner_opts
+        .deserialize(&serializable.proof_bytes)
+        .map_err(|e| e.to_string())?;
     Ok(Sha512SingleBlockProof {
         proof,
         preprocessed_vk: from_serializable_vk(serializable.vk),
@@ -377,18 +401,36 @@ pub fn serialize_multi_block_proof(proof: &Sha512MultiBlockProof) -> Vec<u8> {
 }
 
 pub fn deserialize_multi_block_proof(bytes: &[u8]) -> Result<Sha512MultiBlockProof, String> {
+    if bytes.len() > MAX_MULTI_PROOF_BYTES {
+        return Err("serialized multi-block proof exceeds configured size limit".to_string());
+    }
+    let bincode_opts = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .with_limit(MAX_MULTI_PROOF_BYTES as u64);
     let serializable: SerializableMultiBlockProof =
-        bincode::deserialize(bytes).map_err(|e| e.to_string())?;
+        bincode_opts.deserialize(bytes).map_err(|e| e.to_string())?;
     if serializable.digest.len() != 64 {
         return Err("invalid digest length in serialized multi-block proof".to_string());
+    }
+    if serializable.block_proofs.len() > MAX_MULTI_BLOCK_PROOFS {
+        return Err("too many block proofs in serialized multi-block proof".to_string());
     }
     let mut digest = [0_u8; 64];
     digest.copy_from_slice(&serializable.digest);
 
     let mut block_proofs = Vec::with_capacity(serializable.block_proofs.len());
+    let inner_opts = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .with_limit(MAX_INNER_PROOF_BYTES as u64);
     for p in serializable.block_proofs {
-        let proof: Sha512StarkProof =
-            bincode::deserialize(&p.proof_bytes).map_err(|e| e.to_string())?;
+        if p.proof_bytes.len() > MAX_INNER_PROOF_BYTES {
+            return Err("inner block proof exceeds configured size limit".to_string());
+        }
+        let proof: Sha512StarkProof = inner_opts
+            .deserialize(&p.proof_bytes)
+            .map_err(|e| e.to_string())?;
         block_proofs.push(Sha512SingleBlockProof {
             proof,
             preprocessed_vk: from_serializable_vk(p.vk),
