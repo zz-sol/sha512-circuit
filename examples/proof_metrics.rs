@@ -1,22 +1,19 @@
-use std::array;
 use std::time::Instant;
 
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_challenger::DuplexChallenger;
+use p3_baby_bear::BabyBear;
+use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
-use p3_field::{PrimeCharacteristicRing, PrimeField32};
+use p3_field::PrimeCharacteristicRing;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_keccak::Keccak256Hash;
 use p3_matrix::Matrix;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher};
+use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark::{
     PreprocessedVerifierKey, Proof, StarkConfig, prove_with_preprocessed, setup_preprocessed,
     verify_with_preprocessed,
 };
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
-use sha2::{Digest, Sha256};
 use sha512_circuit::{Sha512Circuit, Sha512RoundAir};
 
 const SHA512_IV: [u64; 8] = [
@@ -36,36 +33,14 @@ struct PublicInput {
     digest: [u8; 64],
 }
 
-#[derive(Clone)]
-struct Sha256FieldHasher;
-
-impl CryptographicHasher<BabyBear, [BabyBear; 8]> for Sha256FieldHasher {
-    fn hash_iter<I>(&self, input: I) -> [BabyBear; 8]
-    where
-        I: IntoIterator<Item = BabyBear>,
-    {
-        let mut hasher = Sha256::new();
-        for x in input {
-            hasher.update(x.as_canonical_u32().to_le_bytes());
-        }
-        let digest = hasher.finalize();
-
-        array::from_fn(|i| {
-            let j = i * 4;
-            let word = u32::from_le_bytes([digest[j], digest[j + 1], digest[j + 2], digest[j + 3]]);
-            BabyBear::from_u32(word)
-        })
-    }
-}
-
 type Val = BabyBear;
-type Perm = Poseidon2BabyBear<16>;
-type MyHash = Sha256FieldHasher;
-type MyCompress = CompressionFunctionFromHasher<MyHash, 2, 8>;
-type ValMmcs = MerkleTreeMmcs<Val, Val, MyHash, MyCompress, 8>;
+type ByteHash = Keccak256Hash;
+type FieldHash = SerializingHasher<ByteHash>;
+type MyCompress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
+type ValMmcs = MerkleTreeMmcs<Val, u8, FieldHash, MyCompress, 32>;
 type Challenge = p3_field::extension::BinomialExtensionField<Val, 4>;
 type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
-type Challenger = DuplexChallenger<Val, Perm, 16, 8>;
+type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
 type Dft = Radix2DitParallel<Val>;
 type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type Config = StarkConfig<Pcs, Challenge, Challenger>;
@@ -73,15 +48,14 @@ type StarkProof = Proof<Config>;
 type PreVk = PreprocessedVerifierKey<Config>;
 
 fn setup_config() -> Config {
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = Sha256FieldHasher;
-    let compress = MyCompress::new(hash.clone());
+    let byte_hash = ByteHash {};
+    let hash = FieldHash::new(byte_hash);
+    let compress = MyCompress::new(byte_hash);
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = create_test_fri_params(challenge_mmcs, 2);
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::from_hasher(vec![], byte_hash);
     Config::new(pcs, challenger)
 }
 

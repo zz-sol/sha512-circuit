@@ -13,6 +13,7 @@ p3-field = "0.4.2"
 p3-fri = "0.4.2"
 p3-matrix = "0.4.2"
 p3-merkle-tree = "0.4.2"
+p3-keccak = "0.4.2"
 p3-symmetric = "0.4.2"
 p3-uni-stark = "0.4.2"
 rand = { version = "0.9", features = ["small_rng"] }

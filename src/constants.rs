@@ -1,4 +1,4 @@
-pub(crate) const INITIAL_STATE: [u64; 8] = [
+pub const INITIAL_STATE: [u64; 8] = [
     0x6a09e667f3bcc908,
     0xbb67ae8584caa73b,
     0x3c6ef372fe94f82b,

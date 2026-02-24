@@ -6,6 +6,7 @@ mod sha512;
 mod trace;
 
 pub use air::Sha512RoundAir;
+pub use constants::INITIAL_STATE;
 pub use proof_api::{
     Sha512MessageInstance, Sha512MultiBlockProof, Sha512PreprocessedVk, Sha512ProofSettings,
     Sha512SingleBlockInstance, Sha512SingleBlockProof, Sha512StarkConfig, Sha512StarkProof,

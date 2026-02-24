@@ -1,19 +1,17 @@
 use bincode::Options;
-use p3_baby_bear::{BabyBear, Poseidon2BabyBear};
-use p3_challenger::DuplexChallenger;
+use p3_baby_bear::BabyBear;
+use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_commit::{ExtensionMmcs, Pcs as PcsTrait};
 use p3_dft::Radix2DitParallel;
-use p3_field::Field;
 use p3_field::extension::BinomialExtensionField;
 use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_keccak::Keccak256Hash;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use p3_uni_stark::{
     PreprocessedVerifierKey, Proof, StarkConfig, prove_with_preprocessed, setup_preprocessed,
     verify_with_preprocessed,
 };
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 use crate::air::Sha512RoundAir;
@@ -21,14 +19,13 @@ use crate::ops::bb;
 use crate::sha512::Sha512Circuit;
 
 pub type Val = BabyBear;
-type Perm = Poseidon2BabyBear<16>;
-type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
-type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
-type ValMmcs =
-    MerkleTreeMmcs<<Val as Field>::Packing, <Val as Field>::Packing, MyHash, MyCompress, 8>;
+type ByteHash = Keccak256Hash;
+type FieldHash = SerializingHasher<ByteHash>;
+type MyCompress = CompressionFunctionFromHasher<ByteHash, 2, 32>;
+type ValMmcs = MerkleTreeMmcs<Val, u8, FieldHash, MyCompress, 32>;
 type Challenge = BinomialExtensionField<Val, 4>;
 type ChallengeMmcs = ExtensionMmcs<Val, Challenge, ValMmcs>;
-type Challenger = DuplexChallenger<Val, Perm, 16, 8>;
+type Challenger = SerializingChallenger32<Val, HashChallenger<u8, ByteHash, 32>>;
 type Dft = Radix2DitParallel<Val>;
 type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type Commitment = <Pcs as PcsTrait<Challenge, Challenger>>::Commitment;
@@ -106,15 +103,14 @@ struct SerializableMultiBlockProof {
 }
 
 fn setup_config(settings: Sha512ProofSettings) -> Sha512StarkConfig {
-    let mut rng = SmallRng::seed_from_u64(settings.rng_seed);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
+    let byte_hash = ByteHash {};
+    let field_hash = FieldHash::new(byte_hash);
+    let compress = MyCompress::new(byte_hash);
+    let val_mmcs = ValMmcs::new(field_hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let fri_params = create_test_fri_params(challenge_mmcs, settings.log_final_poly_len);
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri_params);
-    let challenger = Challenger::new(perm);
+    let challenger = Challenger::from_hasher(settings.rng_seed.to_le_bytes().to_vec(), byte_hash);
     Sha512StarkConfig::new(pcs, challenger)
 }
 
@@ -159,6 +155,7 @@ pub fn prove_single_block_with_settings(
     let (preprocessed_prover_data, preprocessed_vk) =
         setup_preprocessed::<Sha512StarkConfig, _>(&config, &air, TRACE_DEGREE_BITS)
             .expect("has preprocessed");
+    // Public values bind to the final compression working state (a..h) before feed-forward.
     let public_values = trace.round_states[80].map(bb);
 
     let proof = prove_with_preprocessed(
@@ -193,6 +190,7 @@ pub fn verify_single_block_proof_with_settings(
         &instance.initial_state,
         &instance.block,
     );
+    // Public values bind to the final compression working state (a..h) before feed-forward.
     let public_values = Sha512Circuit::compress_block(&instance.initial_state, &instance.block)
         .round_states[80]
         .map(bb);

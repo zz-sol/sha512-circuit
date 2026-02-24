@@ -3,8 +3,8 @@ use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
 
 use super::columns::{
-    LIMBS_PER_WORD, SCHED_CARRY_BASE, WORD_W, lag_limb_col, lag_limb_range_source, limb_col,
-    range_bit_col,
+    LIMBS_PER_WORD, SCHED_CARRY_BASE, WORD_W, carry_range_source, lag_limb_col,
+    lag_limb_range_source, limb_col, range_bit_col,
 };
 
 pub(super) fn constrain_add_5_limbs<AB: AirBuilder<F = BabyBear>>(
@@ -19,7 +19,7 @@ pub(super) fn constrain_add_5_limbs<AB: AirBuilder<F = BabyBear>>(
 
     for limb in 0..LIMBS_PER_WORD {
         let carry_out = row[carry_base + limb].clone();
-        constrain_small_u32::<AB>(builder, carry_out.clone(), 4);
+        constrain_carry_max::<AB>(builder, row, carry_base + limb, 4);
         let sum = row[limb_col(ops[0], limb)].clone()
             + row[limb_col(ops[1], limb)].clone()
             + row[limb_col(ops[2], limb)].clone()
@@ -45,7 +45,7 @@ pub(super) fn constrain_add_2_limbs<AB: AirBuilder<F = BabyBear>>(
 
     for limb in 0..LIMBS_PER_WORD {
         let carry_out = row[carry_base + limb].clone();
-        constrain_small_u32::<AB>(builder, carry_out.clone(), 1);
+        constrain_carry_max::<AB>(builder, row, carry_base + limb, 1);
         let sum = row[limb_col(lhs, limb)].clone() + row[limb_col(rhs, limb)].clone() + carry_in;
         let expected = row[limb_col(out, limb)].clone() + carry_out.clone() * two16;
         builder.assert_eq(sum, expected);
@@ -67,7 +67,7 @@ pub(super) fn constrain_add_2_limbs_across_rows<AB: AirBuilder<F = BabyBear>>(
 
     for limb in 0..LIMBS_PER_WORD {
         let carry_out = local[carry_base + limb].clone();
-        constrain_small_u32::<AB>(builder, carry_out.clone(), 1);
+        constrain_carry_max::<AB>(builder, local, carry_base + limb, 1);
         let sum =
             local[limb_col(lhs, limb)].clone() + local[limb_col(rhs, limb)].clone() + carry_in;
         let expected = next[limb_col(out_next, limb)].clone() + carry_out.clone() * two16;
@@ -90,7 +90,7 @@ pub(super) fn constrain_schedule_recurrence<B: AirBuilder<F = BabyBear>>(
         let lag7_limb = row[lag_limb_col(6, limb)].clone();
         let lag16_limb = row[lag_limb_col(15, limb)].clone();
         let carry_out = row[SCHED_CARRY_BASE + limb].clone();
-        constrain_small_u32::<B>(builder, carry_out.clone(), 3);
+        constrain_carry_max::<B>(builder, row, SCHED_CARRY_BASE + limb, 3);
 
         let sum = sigma1_limb + lag7_limb + sigma0_limb + lag16_limb + carry_in;
         let expected = row[limb_col(WORD_W, limb)].clone() + carry_out.clone() * two16;
@@ -99,12 +99,36 @@ pub(super) fn constrain_schedule_recurrence<B: AirBuilder<F = BabyBear>>(
     }
 }
 
-fn constrain_small_u32<AB: AirBuilder<F = BabyBear>>(builder: &mut AB, x: AB::Var, max: u32) {
-    let mut poly = AB::Expr::ONE;
-    for k in 0..=max {
-        poly *= x.clone() - BabyBear::from_u32(k);
+fn constrain_carry_max<AB: AirBuilder<F = BabyBear>>(
+    builder: &mut AB,
+    row: &[AB::Var],
+    carry_col: usize,
+    max: u32,
+) {
+    let source = carry_range_source(carry_col);
+    let b0 = row[range_bit_col(source, 0)].clone();
+    let b1 = row[range_bit_col(source, 1)].clone();
+    let b2 = row[range_bit_col(source, 2)].clone();
+
+    match max {
+        1 => {
+            for bit in 1..16 {
+                builder.assert_zero(row[range_bit_col(source, bit)].clone());
+            }
+        }
+        3 => {
+            for bit in 2..16 {
+                builder.assert_zero(row[range_bit_col(source, bit)].clone());
+            }
+        }
+        4 => {
+            for bit in 3..16 {
+                builder.assert_zero(row[range_bit_col(source, bit)].clone());
+            }
+            builder.assert_zero(b2 * (b1 + b0));
+        }
+        _ => unreachable!("unsupported carry bound"),
     }
-    builder.assert_zero(poly);
 }
 
 pub(super) fn pack_bits<AB: AirBuilder<F = BabyBear>>(

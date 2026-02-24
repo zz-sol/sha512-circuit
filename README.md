@@ -6,10 +6,10 @@ A Plonky3 STARK circuit for SHA-512 block compression, written in Rust. Includes
 
 The library proves that a SHA-512 compression was computed correctly, without revealing the computation details beyond the public instance (initial state + message block) and the final working state.
 
-**Field**: BabyBear (2^31 − 2^27 + 1)
-**Polynomial commitment**: FRI over BabyBear with Poseidon2 Merkle trees
-**Trace size**: 128 rows × ~1280 columns per 128-byte block
-**Proof size**: ~200–400 KB per block (varies with FRI parameters)
+- **Field**: BabyBear (2^31 − 2^27 + 1)
+- **Polynomial commitment**: FRI over BabyBear with Keccak256 Merkle trees
+- **Trace size**: 128 rows × ~1280 columns per 128-byte block
+- **Proof size**: ~200–400 KB per block (varies with FRI parameters)
 
 ## Usage
 
@@ -20,7 +20,7 @@ use sha512_circuit::{
     Sha512SingleBlockInstance, prove_single_block, verify_single_block_proof,
     serialize_single_block_proof, deserialize_single_block_proof,
 };
-use sha512_circuit::constants::INITIAL_STATE;
+use sha512_circuit::INITIAL_STATE;
 
 let instance = Sha512SingleBlockInstance {
     initial_state: INITIAL_STATE,
@@ -41,7 +41,7 @@ let proof2 = deserialize_single_block_proof(&bytes).unwrap();
 use sha512_circuit::{
     Sha512MessageInstance, prove_message, verify_message_proof,
 };
-use sha512_circuit::constants::INITIAL_STATE;
+use sha512_circuit::INITIAL_STATE;
 
 let instance = Sha512MessageInstance {
     initial_state: INITIAL_STATE,
@@ -62,7 +62,7 @@ use sha512_circuit::{Sha512ProofSettings, prove_single_block_with_settings};
 
 let settings = Sha512ProofSettings {
     log_final_poly_len: 4,  // larger = more security, larger proofs
-    rng_seed: 42,           // seeds Poseidon2 permutation constants
+    rng_seed: 1,            // domain-separated transcript seed
 };
 let proof = prove_single_block_with_settings(instance, settings);
 ```
