@@ -22,7 +22,8 @@ use crate::proof_api::{
     deserialize_message_instance, deserialize_multi_block_proof, deserialize_single_block_instance,
     deserialize_single_block_proof, prove_message, prove_message_with_settings, prove_single_block,
     serialize_message_instance, serialize_multi_block_proof, serialize_single_block_instance,
-    serialize_single_block_proof, verify_message_proof, verify_single_block_proof,
+    serialize_single_block_proof, verify_message_proof, verify_message_proof_with_settings,
+    verify_single_block_proof,
 };
 use crate::sha512::Sha512Circuit;
 
@@ -181,11 +182,14 @@ fn public_multiblock_api_long_message() {
         message: (0..300).map(|i| ((i * 17 + 3) & 0xff) as u8).collect(),
     };
     let settings = Sha512ProofSettings {
-        log_final_poly_len: 2,
+        log_final_poly_len: 4,
         rng_seed: 9,
     };
     let proof = prove_message_with_settings(&instance, settings);
-    assert!(verify_message_proof(&instance, &proof));
+    assert!(!verify_message_proof(&instance, &proof));
+    assert!(verify_message_proof_with_settings(
+        &instance, &proof, settings
+    ));
 
     let mut wrong = instance.clone();
     wrong.message[0] ^= 1;

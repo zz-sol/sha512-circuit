@@ -27,8 +27,8 @@
 //!
 //! ## Security notice
 //!
-//! **This implementation has not been audited.** The default [`Sha512ProofSettings`] use
-//! test-grade FRI parameters (`log_final_poly_len = 2`) which provide very low security.
+//! **This implementation has not been audited.** The default [`Sha512ProofSettings`] are
+//! verifier-oriented baseline parameters (`log_final_poly_len = 4`).
 //! For any production deployment, supply custom settings with parameters appropriate for
 //! your target security level.
 //!
@@ -97,7 +97,6 @@
 
 mod air;
 mod constants;
-mod logup_experimental;
 mod ops;
 mod proof_api;
 mod sha512;
@@ -105,11 +104,6 @@ mod trace;
 
 pub use air::Sha512RoundAir;
 pub use constants::INITIAL_STATE;
-pub use logup_experimental::{
-    Sha512LagLogupBatchProof, Sha512LagLogupConfig, Sha512LagLogupProof, Sha512LagLogupSettings,
-    prove_sha_lag_logup, prove_sha_lag_logup_with_settings, verify_sha_lag_logup,
-    verify_sha_lag_logup_with_settings,
-};
 pub use proof_api::{
     Sha512MessageInstance, Sha512MultiBlockProof, Sha512PreprocessedVk, Sha512ProofSettings,
     Sha512SingleBlockInstance, Sha512SingleBlockProof, Sha512StarkConfig, Sha512StarkProof,
@@ -127,7 +121,3 @@ pub use trace::BlockTrace;
 mod proof_tests;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_logup_experimental;
-#[cfg(test)]
-mod tests_logup_sha_range;

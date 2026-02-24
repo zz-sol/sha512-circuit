@@ -144,7 +144,7 @@ This addition is performed by the verifier (not inside the STARK). In the multi-
 ## Known Limitations
 
 - **Not audited.** This is a prototype and has not undergone a security review.
-- **Test-grade FRI parameters by default.** The current setup uses `create_test_fri_params` and only exposes `log_final_poly_len`/`rng_seed`; production use needs hardened FRI parameterization.
+- **No audited security parameter policy.** The crate exposes `log_final_poly_len`/`rng_seed`; production deployments should enforce their own verifier policy.
 - **No recursive proof composition.** Multi-block uses one message-level STARK proof, but there is no recursive aggregation layer.
 - **Soundness depends on correct instance wiring by the caller.** The proof binds to `(initial_state, block)`; a caller that passes wrong instance values to the verifier will get incorrect results.
 

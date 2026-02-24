@@ -16,9 +16,8 @@
 //!
 //! ## Security note
 //!
-//! Default [`Sha512ProofSettings`] use test-grade FRI parameters (`log_final_poly_len = 2`)
-//! which provide negligible security.  Supply custom settings with appropriate parameters
-//! for any deployment that needs real security guarantees.
+//! Default [`Sha512ProofSettings`] are verifier-oriented baseline values.  Supply explicit,
+//! policy-driven settings for deployments that need strict security guarantees.
 
 use bincode::Options;
 use p3_baby_bear::BabyBear;
@@ -52,6 +51,7 @@ type Dft = Radix2DitParallel<Val>;
 type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type Commitment = <Pcs as PcsTrait<Challenge, Challenger>>::Commitment;
 const TRACE_DEGREE_BITS: usize = 7;
+const MIN_VERIFIER_LOG_FINAL_POLY_LEN: usize = 4;
 const MAX_MESSAGE_INSTANCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SINGLE_PROOF_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MULTI_PROOF_BYTES: usize = 64 * 1024 * 1024;
@@ -81,16 +81,15 @@ pub type Sha512PreprocessedVk = PreprocessedVerifierKey<Sha512StarkConfig>;
 /// ## Fields
 ///
 /// * `log_final_poly_len` — the log₂ of the FRI final polynomial length.  Larger values
-///   increase proof security but also proof size and verification time.  The default value
-///   of `2` is suitable for testing only.
+///   increase proof security but also proof size and verification time.
 /// * `rng_seed` — the seed for the Fiat-Shamir challenger transcript.  Changing this
 ///   produces a different (but equally valid) proof for the same instance.
 ///
 /// ## Default
 ///
-/// The default settings (`log_final_poly_len = 2`, `rng_seed = 1`) prioritise speed for
-/// tests and benchmarks.  **Do not use the default in production.**
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+/// The default settings (`log_final_poly_len = 4`, `rng_seed = 1`) are a verifier-side
+/// baseline. Production deployments should still set parameters explicitly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sha512ProofSettings {
     /// Log₂ of the FRI final polynomial length.  Controls proof security and size.
     pub log_final_poly_len: usize,
@@ -101,7 +100,7 @@ pub struct Sha512ProofSettings {
 impl Default for Sha512ProofSettings {
     fn default() -> Self {
         Self {
-            log_final_poly_len: 2,
+            log_final_poly_len: 4,
             rng_seed: 1,
         }
     }
@@ -308,8 +307,8 @@ pub fn prove_single_block_with_settings(
 
 /// Verifies a single-block proof using the settings embedded in the proof.
 ///
-/// Convenience wrapper around [`verify_single_block_proof_with_settings`] that extracts
-/// the settings from `proof.settings`.
+/// Convenience wrapper around [`verify_single_block_proof_with_settings`] that uses
+/// verifier-side default settings.
 ///
 /// # Returns
 ///
@@ -318,7 +317,11 @@ pub fn verify_single_block_proof(
     instance: Sha512SingleBlockInstance,
     proof: &Sha512SingleBlockProof,
 ) -> bool {
-    verify_single_block_proof_with_settings(instance, proof, proof.settings)
+    let verifier_policy = Sha512ProofSettings::default();
+    if proof.settings != verifier_policy {
+        return false;
+    }
+    verify_single_block_proof_with_settings(instance, proof, verifier_policy)
 }
 
 /// Verifies a single-block proof with explicitly specified settings.
@@ -339,6 +342,9 @@ pub fn verify_single_block_proof_with_settings(
     proof: &Sha512SingleBlockProof,
     settings: Sha512ProofSettings,
 ) -> bool {
+    if settings.log_final_poly_len < MIN_VERIFIER_LOG_FINAL_POLY_LEN {
+        return false;
+    }
     let config = setup_config(settings);
     let preprocessed = Sha512Circuit::build_plonky3_preprocessed_trace_from_instance(
         &instance.initial_state,
@@ -418,7 +424,8 @@ pub fn prove_message_with_settings(
 
 /// Verifies a full-message proof using the settings embedded in the proof.
 ///
-/// Convenience wrapper around [`verify_message_proof_with_settings`].
+/// Convenience wrapper around [`verify_message_proof_with_settings`] that uses
+/// verifier-side default settings.
 ///
 /// # Returns
 ///
@@ -427,7 +434,11 @@ pub fn verify_message_proof(
     instance: &Sha512MessageInstance,
     proof: &Sha512MultiBlockProof,
 ) -> bool {
-    verify_message_proof_with_settings(instance, proof, proof.settings)
+    let verifier_policy = Sha512ProofSettings::default();
+    if proof.settings != verifier_policy {
+        return false;
+    }
+    verify_message_proof_with_settings(instance, proof, verifier_policy)
 }
 
 /// Verifies a full-message proof with explicitly specified settings.
@@ -446,6 +457,9 @@ pub fn verify_message_proof_with_settings(
     proof: &Sha512MultiBlockProof,
     settings: Sha512ProofSettings,
 ) -> bool {
+    if settings.log_final_poly_len < MIN_VERIFIER_LOG_FINAL_POLY_LEN {
+        return false;
+    }
     let config = setup_config(settings);
     let bundle =
         Sha512Circuit::build_message_air_bundle(&instance.initial_state, &instance.message);

@@ -39,7 +39,6 @@ use p3_air::{
 };
 use p3_baby_bear::BabyBear;
 use p3_field::PrimeCharacteristicRing;
-use p3_field::PrimeField32;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 
@@ -678,25 +677,6 @@ impl Sha512Circuit {
         verify_with_preprocessed(main_trace, &preprocessed_trace, public_values)
     }
 
-    pub fn collect_lag_range_values_for_logup(
-        initial_state: &[u64; 8],
-        block: &[u8; 128],
-    ) -> Vec<u32> {
-        let trace = Sha512Circuit::compress_block(initial_state, block);
-        let main = Sha512Circuit::build_plonky3_air_trace(&trace);
-        let lag_count = LAG_COUNT * LIMBS_PER_WORD;
-        let mut out = Vec::with_capacity(main.height() * lag_count);
-        for row in 0..main.height() {
-            let row_slice = main.row_slice(row).expect("row exists");
-            for lag in 0..LAG_COUNT {
-                for limb in 0..LIMBS_PER_WORD {
-                    out.push(row_slice[lag_limb_col(lag, limb)].as_canonical_u32());
-                }
-            }
-        }
-        out
-    }
-
     pub(crate) fn build_message_air_bundle(
         initial_state: &[u64; 8],
         message: &[u8],
@@ -818,8 +798,7 @@ fn verify_with_preprocessed(
 #[cfg(test)]
 pub(crate) use columns::{
     AIR_WIDTH_FOR_TESTS, LAG_LIMB_BASE_FOR_TESTS, LIMB_BASE_FOR_TESTS, LIMBS_PER_WORD_FOR_TESTS,
-    RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, RANGE_SOURCES_FOR_TESTS,
-    SCHED_CARRY_BASE_FOR_TESTS, WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS,
-    WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS, WORD_W_FOR_TESTS, lag_limb_col_for_tests,
-    range_source_col_for_tests,
+    RANGE_BIT_BASE_FOR_TESTS, RANGE_BITS_PER_SOURCE_FOR_TESTS, SCHED_CARRY_BASE_FOR_TESTS,
+    WORD_A_FOR_TESTS, WORD_E_FOR_TESTS, WORD_K_FOR_TESTS, WORD_SIGMA0_FOR_TESTS, WORD_T1_FOR_TESTS,
+    WORD_W_FOR_TESTS,
 };
