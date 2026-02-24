@@ -8,7 +8,7 @@ The library proves that a SHA-512 compression was computed correctly, without re
 
 - **Field**: BabyBear (2^31 − 2^27 + 1)
 - **Polynomial commitment**: FRI over BabyBear with Keccak-256 Merkle trees
-- **Trace size**: 128 rows × 2628 columns per 128-byte block
+- **Trace size**: 128 rows × 1972 columns per 128-byte block
 - **Proof size**: ~200–400 KB per block (varies with FRI parameters)
 
 ## Usage
@@ -97,18 +97,17 @@ let proof = prove_single_block_with_settings(instance, settings);
 | 80 | Final working state `(a..h)` after round 80 |
 | 81–127 | Padding rows (degenerate rounds, W=K=0) to reach 2^7 |
 
-### Column layout (2628 columns per row)
+### Column layout (1972 columns per row)
 
 | Range | Content |
 |-------|---------|
-| 0–15 | Main words: `a, b, c, d, e, f, g, h, W, K, Σ0, Σ1, Ch, Maj, T1, T2` |
-| 16–79 | 16-bit limb decompositions (4 limbs × 16 words) |
-| 80–95 | Carry columns for T1, T2, A, E additions (4 limbs each) |
-| 96–159 | Lag limbs (4 limbs × 16 lags) |
-| 160–163 | Schedule carries (4 limbs) |
-| 164–547 | Bit decompositions: 64 bits × 6 words (A, B, C, E, F, G) |
-| 548–2595 | Range-proof bit columns: 16 bits × (word limbs + lag limbs) |
-| 2596–2627 | Carry-bit columns (minimal-width per carry type) |
+| 0–63 | 16-bit limb decompositions (4 limbs × 16 words) |
+| 64–79 | Carry columns for T1, T2, A, E additions (4 limbs each) |
+| 80–143 | Lag limbs (4 limbs × 16 lags) |
+| 144–147 | Schedule carries (4 limbs) |
+| 148–531 | Bit decompositions: 64 bits × 6 words (A, B, C, E, F, G) |
+| 532–1939 | Range-proof bit columns: 16 bits × (D/H/W/K/T1/T2 limbs + lag limbs) |
+| 1940–1971 | Carry-bit columns (minimal-width per carry type) |
 
 ### Preprocessed (instance-dependent) trace
 

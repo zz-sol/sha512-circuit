@@ -208,9 +208,6 @@ fn make_air_trace_with_instance() -> ([u64; 8], [u8; 128], RowMajorMatrix<BabyBe
 
 fn mutate_word(trace: &mut RowMajorMatrix<BabyBear>, row: usize, word: usize, delta: u16) {
     let base = row * AIR_WIDTH_FOR_TESTS;
-    let scalar = base + word;
-    trace.values[scalar] += BabyBear::from_u16(delta);
-
     let limb0 = base + LIMB_BASE_FOR_TESTS + word * LIMBS_PER_WORD_FOR_TESTS;
     trace.values[limb0] += BabyBear::from_u16(delta);
 }

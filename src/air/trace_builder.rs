@@ -1,8 +1,6 @@
 use p3_baby_bear::BabyBear;
 use p3_field::{PrimeCharacteristicRing, PrimeField32};
 
-use crate::ops::bb;
-
 use super::columns::{
     AIR_WIDTH, BIT_A_BASE, BIT_B_BASE, BIT_C_BASE, BIT_E_BASE, BIT_F_BASE, BIT_G_BASE,
     CARRY_A_BASE, CARRY_E_BASE, CARRY_T1_BASE, CARRY_T2_BASE, LAG_COUNT, LAG_LIMB_BASE,
@@ -82,15 +80,6 @@ pub(super) fn seed_padding_helpers(row: &mut [BabyBear; AIR_WIDTH]) {
     let (_, carry_t2) = add_with_carries_2(0, 0);
     let (_, carry_a) = add_with_carries_2(t1, t2);
     let (_, carry_e) = add_with_carries_2(d, t1);
-
-    row[WORD_W] = BabyBear::ZERO;
-    row[WORD_K] = BabyBear::ZERO;
-    row[WORD_SIGMA0] = BabyBear::ZERO;
-    row[WORD_SIGMA1] = BabyBear::ZERO;
-    row[WORD_CH] = BabyBear::ZERO;
-    row[WORD_MAJ] = BabyBear::ZERO;
-    row[WORD_T1] = bb(t1);
-    row[WORD_T2] = BabyBear::ZERO;
 
     set_word_limbs(row, WORD_W, 0);
     set_word_limbs(row, WORD_K, 0);

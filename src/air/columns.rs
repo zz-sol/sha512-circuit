@@ -8,18 +8,8 @@
 //! ## Column layout (in order)
 //!
 //! ```text
-//! ┌─ Words ────────────────────────── cols 0 – 15 ─────────────────────────────────────┐
-//! │  WORD_A..WORD_H  — working state (a, b, c, d, e, f, g, h)                          │
-//! │  WORD_W          — current message schedule word                                    │
-//! │  WORD_K          — round constant                                                   │
-//! │  WORD_SIGMA0     — Σ0(a)                                                            │
-//! │  WORD_SIGMA1     — Σ1(e)                                                            │
-//! │  WORD_CH         — Ch(e, f, g)                                                      │
-//! │  WORD_MAJ        — Maj(a, b, c)                                                     │
-//! │  WORD_T1         — T1 = h + Σ1(e) + Ch + K + W                                     │
-//! │  WORD_T2         — T2 = Σ0(a) + Maj(a, b, c)                                       │
-//! ├─ Limbs ─────────────────────────────────────────────────────────────────────────────┤
-//! │  16 words × 4 limbs (16-bit each) = 64 columns                                     │
+//! ┌─ Limbs ────────────────────────── cols 0 – 63 ──────────────────────────────────────┐
+//! │  16 words × 4 limbs (16-bit each) = 64 columns                                      │
 //! ├─ Carries ───────────────────────────────────────────────────────────────────────────┤
 //! │  Carry_T1 (4), Carry_T2 (4), Carry_A (4), Carry_E (4)  = 16 columns               │
 //! ├─ Lags ──────────────────────────────────────────────────────────────────────────────┤
@@ -29,7 +19,7 @@
 //! ├─ Bit decompositions ────────────────────────────────────────────────────────────────┤
 //! │  64 bits × {A, B, C, E, F, G} = 384 columns                                        │
 //! ├─ Range-proof bits ──────────────────────────────────────────────────────────────────┤
-//! │  RANGE_SOURCES sources × 16 bits each (word + lag limbs)                           │
+//! │  RANGE_SOURCES sources × 16 bits each (D/H/W/K/T1/T2 limbs + lag limbs)            │
 //! ├─ Carry bits ────────────────────────────────────────────────────────────────────────┤
 //! │  Minimal-width carry bit decompositions (T1=3 bits, T2/A/E=1 bit, sched=2 bits)   │
 //! ├─ Preprocessed columns (at the tail — shared with the preprocessed trace) ───────────┤
@@ -52,41 +42,41 @@ pub(super) const TRACE_ROWS: usize = 128;
 /// First row index that is not a real SHA-512 round (row 80 = final state, rows 81+ = padding).
 pub(super) const SHA_ROUNDS_PLUS_INIT: usize = 81;
 
-// ─── Word columns (0–15) ─────────────────────────────────────────────────────
+// ─── Logical word ids ────────────────────────────────────────────────────────
 
-/// Working variable `a` — the new value of the `a` register after each round.
+/// Logical word id for working variable `a`.
 pub(super) const WORD_A: usize = 0;
-/// Working variable `b` (equals previous round's `a`).
+/// Logical word id for working variable `b` (equals previous round's `a`).
 pub(super) const WORD_B: usize = 1;
-/// Working variable `c` (equals previous round's `b`).
+/// Logical word id for working variable `c` (equals previous round's `b`).
 pub(super) const WORD_C: usize = 2;
-/// Working variable `d` (equals previous round's `c`).
+/// Logical word id for working variable `d` (equals previous round's `c`).
 pub(super) const WORD_D: usize = 3;
-/// Working variable `e` — the new value of the `e` register after each round.
+/// Logical word id for working variable `e`.
 pub(super) const WORD_E: usize = 4;
-/// Working variable `f` (equals previous round's `e`).
+/// Logical word id for working variable `f` (equals previous round's `e`).
 pub(super) const WORD_F: usize = 5;
-/// Working variable `g` (equals previous round's `f`).
+/// Logical word id for working variable `g` (equals previous round's `f`).
 pub(super) const WORD_G: usize = 6;
-/// Working variable `h` (equals previous round's `g`).
+/// Logical word id for working variable `h` (equals previous round's `g`).
 pub(super) const WORD_H: usize = 7;
-/// Current message schedule word W[i].
+/// Logical word id for current message schedule word W[i].
 pub(super) const WORD_W: usize = 8;
-/// Round constant K[i] (also present in the preprocessed trace).
+/// Logical word id for round constant K[i].
 pub(super) const WORD_K: usize = 9;
-/// Σ0(a) — upper-case Sigma-0 of the `a` register.
+/// Logical word id for Σ0(a).
 pub(super) const WORD_SIGMA0: usize = 10;
-/// Σ1(e) — upper-case Sigma-1 of the `e` register.
+/// Logical word id for Σ1(e).
 pub(super) const WORD_SIGMA1: usize = 11;
-/// Ch(e, f, g) — choose function output.
+/// Logical word id for Ch(e, f, g).
 pub(super) const WORD_CH: usize = 12;
-/// Maj(a, b, c) — majority function output.
+/// Logical word id for Maj(a, b, c).
 pub(super) const WORD_MAJ: usize = 13;
-/// T1 = h + Σ1(e) + Ch(e,f,g) + K[i] + W[i] (mod 2⁶⁴).
+/// Logical word id for T1.
 pub(super) const WORD_T1: usize = 14;
-/// T2 = Σ0(a) + Maj(a,b,c) (mod 2⁶⁴).
+/// Logical word id for T2.
 pub(super) const WORD_T2: usize = 15;
-/// Total number of word columns.
+/// Total number of logical words tracked in limbs.
 pub(super) const WORD_COUNT: usize = 16;
 
 // ─── Limb columns ────────────────────────────────────────────────────────────
@@ -98,14 +88,14 @@ pub(super) const LIMBS_PER_WORD: usize = 4;
 ///
 /// Limbs are stored as `LIMB_BASE + word * LIMBS_PER_WORD + limb` where `limb ∈ 0..4`
 /// with limb 0 being the least significant 16 bits.  Use [`limb_col`] to compute.
-pub(super) const LIMB_BASE: usize = WORD_COUNT;
+pub(super) const LIMB_BASE: usize = 0;
 
 // ─── Carry columns ───────────────────────────────────────────────────────────
 
 /// First carry column for the T1 = h + Σ1(e) + Ch + K + W limb-wise addition.
 ///
 /// Four consecutive columns, one per limb (least to most significant).
-pub(super) const CARRY_T1_BASE: usize = LIMB_BASE + WORD_COUNT * LIMBS_PER_WORD;
+pub(super) const CARRY_T1_BASE: usize = WORD_COUNT * LIMBS_PER_WORD;
 
 /// First carry column for the T2 = Σ0(a) + Maj limb-wise addition.
 pub(super) const CARRY_T2_BASE: usize = CARRY_T1_BASE + LIMBS_PER_WORD;
@@ -155,11 +145,20 @@ pub(super) const BIT_G_BASE: usize = BIT_F_BASE + 64;
 
 // ─── Range-proof columns ─────────────────────────────────────────────────────
 
-/// Number of 16-bit values that receive a range proof.
+/// Words whose limbs are range-proved through the generic 16-bit range-bit section.
 ///
-/// Sources: `WORD_COUNT * LIMBS_PER_WORD` (word limbs)
-///        + `LAG_COUNT * LIMBS_PER_WORD`  (lag limbs).
-pub(super) const RANGE_SOURCES: usize = (WORD_COUNT + LAG_COUNT) * LIMBS_PER_WORD;
+/// Limbs of `A,B,C,E,F,G` are constrained directly from their 64-bit Boolean
+/// decompositions in the AIR, so they are excluded from this set.
+pub(super) const RANGED_WORDS: [usize; 6] = [WORD_D, WORD_H, WORD_W, WORD_K, WORD_T1, WORD_T2];
+
+/// Number of range-proof sources contributed by word limbs.
+pub(super) const RANGED_WORD_SOURCES: usize = RANGED_WORDS.len() * LIMBS_PER_WORD;
+
+/// Number of 16-bit values that receive a generic range proof.
+///
+/// Sources: `RANGED_WORD_SOURCES` (selected word limbs)
+///        + `LAG_COUNT * LIMBS_PER_WORD` (lag limbs).
+pub(super) const RANGE_SOURCES: usize = RANGED_WORD_SOURCES + LAG_COUNT * LIMBS_PER_WORD;
 
 /// Number of Boolean bits allocated per range-proof source (= 16, covering 0..65535).
 pub(super) const RANGE_BITS_PER_SOURCE: usize = 16;
@@ -223,7 +222,7 @@ pub(super) fn lag_limb_col(lag: usize, limb: usize) -> usize {
 ///
 /// Used by [`range_bit_col`] to map lag limbs into the range-proof bit section.
 pub(super) fn lag_limb_range_source(lag: usize, limb: usize) -> usize {
-    WORD_COUNT * LIMBS_PER_WORD + lag * LIMBS_PER_WORD + limb
+    RANGED_WORD_SOURCES + lag * LIMBS_PER_WORD + limb
 }
 
 /// Returns the **column** index of range-proof source `source`.
@@ -232,10 +231,12 @@ pub(super) fn lag_limb_range_source(lag: usize, limb: usize) -> usize {
 /// concrete column that holds the 16-bit value being range-proved.  Used by the
 /// constraint system to assert `source_col == Σ bit_col[source][k] * 2^k`.
 pub(super) fn range_source_col(source: usize) -> usize {
-    let word_limb_count = WORD_COUNT * LIMBS_PER_WORD;
+    let word_limb_count = RANGED_WORD_SOURCES;
     let lag_limb_count = LAG_COUNT * LIMBS_PER_WORD;
     if source < word_limb_count {
-        LIMB_BASE + source
+        let word_idx = source / LIMBS_PER_WORD;
+        let limb = source % LIMBS_PER_WORD;
+        limb_col(RANGED_WORDS[word_idx], limb)
     } else if source < word_limb_count + lag_limb_count {
         LAG_LIMB_BASE + (source - word_limb_count)
     } else {

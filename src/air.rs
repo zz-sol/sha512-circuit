@@ -119,7 +119,6 @@ where
             .row_slice(0)
             .expect("window has local preprocessed row");
 
-        builder.assert_eq(local[WORD_K].clone(), local_prep[WORD_K].clone());
         for limb in 0..LIMBS_PER_WORD {
             // Bind K exactly as a 64-bit value, not just modulo the base field.
             builder.assert_zero(
@@ -128,10 +127,6 @@ where
                         - local_prep[limb_col(WORD_K, limb)].clone()),
             );
         }
-        builder.assert_zero(
-            local_prep[PREP_INIT_W_SELECTOR_COL].clone()
-                * (local[WORD_W].clone() - local_prep[WORD_W].clone()),
-        );
         for limb in 0..LIMBS_PER_WORD {
             // Bind W[0..15] exactly as 64-bit words from the instance.
             builder.assert_zero(
@@ -140,15 +135,13 @@ where
                         - local_prep[limb_col(WORD_W, limb)].clone()),
             );
         }
-        builder.assert_zero(
-            (AB::Expr::ONE - local_prep[PREP_ROUND_SELECTOR_COL].clone()) * local[WORD_W].clone(),
-        );
-
-        for col in WORD_A..=WORD_H {
-            builder
-                .when_first_row()
-                .assert_eq(local[col].clone(), local_prep[col].clone());
+        for limb in 0..LIMBS_PER_WORD {
+            builder.assert_zero(
+                (AB::Expr::ONE - local_prep[PREP_ROUND_SELECTOR_COL].clone())
+                    * local[limb_col(WORD_W, limb)].clone(),
+            );
         }
+
         for word in WORD_A..=WORD_H {
             for limb in 0..LIMBS_PER_WORD {
                 builder.when_first_row().assert_eq(
@@ -161,20 +154,11 @@ where
         let public: [AB::PublicVar; 8] = core::array::from_fn(|i| builder.public_values()[i]);
         let final_sel = local_prep[PREP_FINAL_SELECTOR_COL].clone();
         for i in 0..8 {
-            builder.assert_zero(final_sel.clone() * (public[i].into() - local[i].clone()));
+            builder.assert_zero(
+                final_sel.clone() * (public[i].into() - pack_word_from_limbs::<AB>(&local, i)),
+            );
         }
-
-        let two16 = BabyBear::from_u32(1 << 16);
-        let two32 = BabyBear::from_u64(1_u64 << 32);
-        let two48 = BabyBear::from_u64(1_u64 << 48);
-
-        for word in 0..WORD_COUNT {
-            let packed = local[limb_col(word, 0)].clone()
-                + local[limb_col(word, 1)].clone() * two16
-                + local[limb_col(word, 2)].clone() * two32
-                + local[limb_col(word, 3)].clone() * two48;
-            builder.assert_eq(local[word].clone(), packed);
-        }
+        let round_sel = local_prep[PREP_ROUND_SELECTOR_COL].clone();
 
         for (word, base) in [
             (WORD_A, BIT_A_BASE),
@@ -185,53 +169,75 @@ where
             (WORD_G, BIT_G_BASE),
         ] {
             for bit in 0..64 {
-                builder.assert_bool(local[base + bit].clone());
+                builder.assert_zero(
+                    round_sel.clone()
+                        * (local[base + bit].clone() * (AB::Expr::ONE - local[base + bit].clone())),
+                );
             }
-            builder.assert_eq(local[word].clone(), pack_bits::<AB>(&local, base));
-        }
-
-        let mut sigma0_word = AB::Expr::ZERO;
-        let mut sigma1_word = AB::Expr::ZERO;
-        let mut ch_word = AB::Expr::ZERO;
-        let mut maj_word = AB::Expr::ZERO;
-        for bit in 0..64 {
-            let a = local[BIT_A_BASE + bit].clone();
-            let b = local[BIT_B_BASE + bit].clone();
-            let c = local[BIT_C_BASE + bit].clone();
-            let e = local[BIT_E_BASE + bit].clone();
-            let f = local[BIT_F_BASE + bit].clone();
-            let g = local[BIT_G_BASE + bit].clone();
-
-            let sigma0 = xor3_expr::<AB>(
-                local[BIT_A_BASE + ((bit + 28) % 64)].clone().into(),
-                local[BIT_A_BASE + ((bit + 34) % 64)].clone().into(),
-                local[BIT_A_BASE + ((bit + 39) % 64)].clone().into(),
+            builder.assert_zero(
+                round_sel.clone()
+                    * (pack_word_from_limbs::<AB>(&local, word) - pack_bits::<AB>(&local, base)),
             );
-
-            let sigma1 = xor3_expr::<AB>(
-                local[BIT_E_BASE + ((bit + 14) % 64)].clone().into(),
-                local[BIT_E_BASE + ((bit + 18) % 64)].clone().into(),
-                local[BIT_E_BASE + ((bit + 41) % 64)].clone().into(),
-            );
-
-            let ch_expr = e.clone() * f.clone() + (AB::Expr::ONE - e) * g.clone();
-            let ab = a.clone() * b.clone();
-            let ac = a.clone() * c.clone();
-            let bc = b.clone() * c.clone();
-            let abc = a * b * c;
-            let maj_expr = ab + ac + bc - abc * BabyBear::TWO;
-
-            let bit_weight = BabyBear::from_u64(1_u64 << bit);
-            sigma0_word += sigma0 * bit_weight;
-            sigma1_word += sigma1 * bit_weight;
-            ch_word += ch_expr * bit_weight;
-            maj_word += maj_expr * bit_weight;
+            for limb in 0..LIMBS_PER_WORD {
+                let mut limb_expr = AB::Expr::ZERO;
+                for bit in 0..16 {
+                    let bit_col = base + limb * 16 + bit;
+                    limb_expr += local[bit_col].clone() * BabyBear::from_u32(1 << bit);
+                }
+                builder.assert_zero(
+                    round_sel.clone() * (local[limb_col(word, limb)].clone() - limb_expr),
+                );
+            }
         }
-        let round_sel = local_prep[PREP_ROUND_SELECTOR_COL].clone();
-        builder.assert_zero(round_sel.clone() * (local[WORD_SIGMA0].clone() - sigma0_word));
-        builder.assert_zero(round_sel.clone() * (local[WORD_SIGMA1].clone() - sigma1_word));
-        builder.assert_zero(round_sel.clone() * (local[WORD_CH].clone() - ch_word));
-        builder.assert_zero(round_sel * (local[WORD_MAJ].clone() - maj_word));
+        for limb in 0..LIMBS_PER_WORD {
+            let mut sigma0_limb = AB::Expr::ZERO;
+            let mut sigma1_limb = AB::Expr::ZERO;
+            let mut ch_limb = AB::Expr::ZERO;
+            let mut maj_limb = AB::Expr::ZERO;
+            for bit in 0..16 {
+                let bit_idx = limb * 16 + bit;
+                let a = local[BIT_A_BASE + bit_idx].clone();
+                let b = local[BIT_B_BASE + bit_idx].clone();
+                let c = local[BIT_C_BASE + bit_idx].clone();
+                let e = local[BIT_E_BASE + bit_idx].clone();
+                let f = local[BIT_F_BASE + bit_idx].clone();
+                let g = local[BIT_G_BASE + bit_idx].clone();
+
+                let sigma0 = xor3_expr::<AB>(
+                    local[BIT_A_BASE + ((bit_idx + 28) % 64)].clone().into(),
+                    local[BIT_A_BASE + ((bit_idx + 34) % 64)].clone().into(),
+                    local[BIT_A_BASE + ((bit_idx + 39) % 64)].clone().into(),
+                );
+                let sigma1 = xor3_expr::<AB>(
+                    local[BIT_E_BASE + ((bit_idx + 14) % 64)].clone().into(),
+                    local[BIT_E_BASE + ((bit_idx + 18) % 64)].clone().into(),
+                    local[BIT_E_BASE + ((bit_idx + 41) % 64)].clone().into(),
+                );
+                let ch_expr = e.clone() * f.clone() + (AB::Expr::ONE - e) * g.clone();
+                let ab = a.clone() * b.clone();
+                let ac = a.clone() * c.clone();
+                let bc = b.clone() * c.clone();
+                let abc = a * b * c;
+                let maj_expr = ab + ac + bc - abc * BabyBear::TWO;
+                let bit_weight = BabyBear::from_u32(1 << bit);
+                sigma0_limb += sigma0 * bit_weight;
+                sigma1_limb += sigma1 * bit_weight;
+                ch_limb += ch_expr * bit_weight;
+                maj_limb += maj_expr * bit_weight;
+            }
+            builder.assert_zero(
+                round_sel.clone() * (local[limb_col(WORD_SIGMA0, limb)].clone() - sigma0_limb),
+            );
+            builder.assert_zero(
+                round_sel.clone() * (local[limb_col(WORD_SIGMA1, limb)].clone() - sigma1_limb),
+            );
+            builder.assert_zero(
+                round_sel.clone() * (local[limb_col(WORD_CH, limb)].clone() - ch_limb),
+            );
+            builder.assert_zero(
+                round_sel.clone() * (local[limb_col(WORD_MAJ, limb)].clone() - maj_limb),
+            );
+        }
 
         for src in 0..RANGE_SOURCES {
             let mut packed = AB::Expr::ZERO;
@@ -321,7 +327,6 @@ where
 
         let mut last = builder.when_last_row();
         for word in WORD_W..WORD_COUNT {
-            last.assert_eq(local[word].clone(), BabyBear::ZERO);
             for limb in 0..LIMBS_PER_WORD {
                 last.assert_eq(local[limb_col(word, limb)].clone(), BabyBear::ZERO);
             }
@@ -330,6 +335,16 @@ where
             last.assert_eq(local[col].clone(), BabyBear::ZERO);
         }
     }
+}
+
+fn pack_word_from_limbs<AB: AirBuilder<F = BabyBear>>(row: &[AB::Var], word: usize) -> AB::Expr {
+    let two16 = BabyBear::from_u32(1 << 16);
+    let two32 = BabyBear::from_u64(1_u64 << 32);
+    let two48 = BabyBear::from_u64(1_u64 << 48);
+    row[limb_col(word, 0)].clone()
+        + row[limb_col(word, 1)].clone() * two16
+        + row[limb_col(word, 2)].clone() * two32
+        + row[limb_col(word, 3)].clone() * two48
 }
 
 #[derive(Clone)]
@@ -417,9 +432,9 @@ impl Sha512Circuit {
     /// (128 rows × `AIR_WIDTH` columns) but only a small subset of columns are
     /// populated.  All other cells are zero.  Populated columns:
     ///
-    /// * `WORD_K`                    — round constant K\[i\] in rows 0..80; zero in rows 80..127.
-    /// * `WORD_W`                    — W\[i\] in rows 0..15 (bound by `PREP_INIT_W_SELECTOR_COL`).
-    /// * `WORD_A..WORD_H`            — initial state, constant across **all** 128 rows;
+    /// * `limb_col(WORD_K, ..)`      — round constant K\[i\] limbs in rows 0..80; zero in rows 80..127.
+    /// * `limb_col(WORD_W, ..)`      — W\[i\] limbs in rows 0..15 (bound by `PREP_INIT_W_SELECTOR_COL`).
+    /// * `limb_col(WORD_A..WORD_H, ..)` — initial state limbs, constant across all rows;
     ///   the first-row boundary constraint uses these to bind the main trace.
     /// * `PREP_ROUND_SELECTOR_COL`   — 1 in rows 0..79, 0 elsewhere.
     /// * `PREP_INIT_W_SELECTOR_COL`  — 1 in rows 0..15, 0 elsewhere.
@@ -441,8 +456,6 @@ impl Sha512Circuit {
         for row in 0..TRACE_ROWS {
             let src = full.row_slice(row).expect("row exists");
             let dst = &mut values[row * AIR_WIDTH..(row + 1) * AIR_WIDTH];
-            dst[WORD_W] = src[WORD_W];
-            dst[WORD_K] = src[WORD_K];
             for limb in 0..LIMBS_PER_WORD {
                 dst[limb_col(WORD_W, limb)] = src[limb_col(WORD_W, limb)];
                 dst[limb_col(WORD_K, limb)] = src[limb_col(WORD_K, limb)];
@@ -453,7 +466,6 @@ impl Sha512Circuit {
             dst[PREP_FINAL_SELECTOR_COL] = BabyBear::from_bool(row == 80);
             for (offset, value) in initial_state.iter().copied().enumerate() {
                 let word = WORD_A + offset;
-                dst[word] = bb(value);
                 for limb in 0..LIMBS_PER_WORD {
                     let limb_value = ((value >> (16 * limb)) & 0xffff) as u16;
                     dst[limb_col(word, limb)] = BabyBear::from_u16(limb_value);
@@ -471,13 +483,13 @@ impl Sha512Circuit {
     /// ## Row structure
     ///
     /// * **Rows 0–79** (round rows): For each SHA-512 round `i`, fills in the
-    ///   working state words (a..h, W, K, Σ0, Σ1, Ch, Maj, T1, T2), their 16-bit
-    ///   limb decompositions, carry values for each limb-wise addition (T1, T2, A, E,
+    ///   16-bit limb decompositions for all tracked words (a..h, W, K, Σ0, Σ1, Ch, Maj, T1, T2),
+    ///   carry values for each limb-wise addition (T1, T2, A, E,
     ///   and schedule), 64-bit Boolean decompositions for bitwise operations, and the
     ///   corresponding range-proof bit columns.
     ///
-    /// * **Row 80** (final state row): Contains only the 8 working-state words
-    ///   (`round_states[80]`) together with their limb decompositions, the lag history
+    /// * **Row 80** (final state row): Contains only the 8 working-state limbs
+    ///   (`round_states[80]`) together with the lag history
     ///   for the schedule, and degenerate "padding helpers" (W = K = 0, all carry /
     ///   bit columns zeroed).  This row's words are bound to the 8 public values by
     ///   the `PREP_FINAL_SELECTOR_COL` constraint.
@@ -491,14 +503,13 @@ impl Sha512Circuit {
     ///
     /// | Group | Column range | Purpose |
     /// |-------|-------------|---------|
-    /// | Words | 0–15 | Working state + schedule intermediates |
-    /// | Limbs | 16–79 | 4 × 16-bit decomposition per word |
-    /// | Carries | 80–95 | Per-limb carries for T1, T2, A, E additions |
-    /// | Lag limbs | 96–159 | Previous 16 W values, 4 limbs each |
-    /// | Sched carries | 160–163 | Carries for the W recurrence |
-    /// | Bits | 164–547 | 64-bit Boolean decompositions for a,b,c,e,f,g |
-    /// | Range bits | 548–2595 | 16-bit range proofs for word/lag limbs |
-    /// | Carry bits | 2596–2627 | Minimal-width carry bit decompositions |
+    /// | Limbs | 0–63 | 4 × 16-bit decomposition per word |
+    /// | Carries | 64–79 | Per-limb carries for T1, T2, A, E additions |
+    /// | Lag limbs | 80–143 | Previous 16 W values, 4 limbs each |
+    /// | Sched carries | 144–147 | Carries for the W recurrence |
+    /// | Bits | 148–531 | 64-bit Boolean decompositions for a,b,c,e,f,g |
+    /// | Range bits | 532–1939 | 16-bit range proofs for D/H/W/K/T1/T2 limbs + lag limbs |
+    /// | Carry bits | 1940–1971 | Minimal-width carry bit decompositions |
     pub fn build_plonky3_air_trace(trace: &BlockTrace) -> RowMajorMatrix<BabyBear> {
         let mut values = Vec::with_capacity(TRACE_ROWS * AIR_WIDTH);
         let mut lags = [0_u64; LAG_COUNT];
@@ -538,7 +549,6 @@ impl Sha512Circuit {
                 choose, majority, t1, t2,
             ];
             for (w, &value) in words.iter().enumerate() {
-                row[w] = bb(value);
                 set_word_limbs(&mut row, w, value);
             }
             set_lag_words(&mut row, &lags);
@@ -559,7 +569,6 @@ impl Sha512Circuit {
         let s = trace.round_states[80];
         let words = [s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]];
         for (w, &value) in words.iter().enumerate() {
-            row80[w] = bb(value);
             set_word_limbs(&mut row80, w, value);
         }
         set_lag_words(&mut row80, &lags);
@@ -595,7 +604,6 @@ impl Sha512Circuit {
                 next_state[7],
             ];
             for (w, &value) in words.iter().enumerate() {
-                row[w] = bb(value);
                 set_word_limbs(&mut row, w, value);
             }
             set_lag_words(&mut row, &lags);

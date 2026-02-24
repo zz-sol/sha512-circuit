@@ -22,7 +22,7 @@
 //! | Field | BabyBear (p = 2³¹ − 2²⁷ + 1) |
 //! | Extension degree | 4 (binomial extension over BabyBear) |
 //! | Polynomial commitment | FRI over BabyBear with Keccak-256 Merkle trees |
-//! | Trace dimensions | 128 rows × 2628 columns per 128-byte block |
+//! | Trace dimensions | 128 rows × 1972 columns per 128-byte block |
 //! | Proof size (typical) | 200–400 KB per block |
 //!
 //! ## Security notice
