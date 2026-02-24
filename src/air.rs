@@ -27,7 +27,7 @@ pub struct Sha512RoundAir {
 }
 
 impl Sha512RoundAir {
-    pub(crate) fn new(preprocessed: RowMajorMatrix<BabyBear>) -> Self {
+    pub fn new(preprocessed: RowMajorMatrix<BabyBear>) -> Self {
         Self { preprocessed }
     }
 }
