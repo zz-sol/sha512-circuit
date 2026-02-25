@@ -19,11 +19,13 @@ use crate::constants::INITIAL_STATE;
 use crate::ops::bb;
 use crate::proof_api::{
     Sha512MessageInstance, Sha512ProofSettings, Sha512SingleBlockInstance,
-    deserialize_message_instance, deserialize_multi_block_proof, deserialize_single_block_instance,
-    deserialize_single_block_proof, prove_message, prove_message_with_settings, prove_single_block,
+    deserialize_message_instance, deserialize_multi_block_proof, deserialize_seed32_private_proof,
+    deserialize_single_block_instance, deserialize_single_block_proof, prove_message,
+    prove_message_with_settings, prove_seed32_private, prove_single_block,
     prove_single_block_with_settings, serialize_message_instance, serialize_multi_block_proof,
-    serialize_single_block_instance, serialize_single_block_proof, verify_message_proof,
-    verify_message_proof_with_settings, verify_single_block_proof,
+    serialize_seed32_private_proof, serialize_single_block_instance, serialize_single_block_proof,
+    verify_message_proof, verify_message_proof_with_settings, verify_seed32_private_proof,
+    verify_single_block_proof,
 };
 use crate::sha512::Sha512Circuit;
 
@@ -320,4 +322,24 @@ fn serialize_message_instance_rejects_oversized_input() {
     };
     let err = serialize_message_instance(&instance).expect_err("should reject oversized message");
     assert!(err.contains("size limit"));
+}
+
+#[test]
+fn seed32_private_api_roundtrip_and_verify() {
+    let seed = [42_u8; 32];
+    let bundle = prove_seed32_private(seed).expect("prove");
+    assert!(verify_seed32_private_proof(&bundle));
+
+    let bytes = serialize_seed32_private_proof(&bundle).expect("encode");
+    let decoded = deserialize_seed32_private_proof(&bytes).expect("decode");
+    assert_eq!(decoded.digest, bundle.digest);
+    assert!(verify_seed32_private_proof(&decoded));
+}
+
+#[test]
+fn seed32_private_api_rejects_tampered_instance() {
+    let seed = [7_u8; 32];
+    let mut bundle = prove_seed32_private(seed).expect("prove");
+    bundle.sealed_instance[10] ^= 1;
+    assert!(!verify_seed32_private_proof(&bundle));
 }

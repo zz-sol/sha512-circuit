@@ -22,14 +22,21 @@ use crate::air::Sha512RoundAir;
 use crate::ops::bb;
 use crate::sha512::Sha512Circuit;
 
+mod private_seed;
 mod prove_verify;
 mod serialization;
 
+pub use private_seed::{
+    Sha512Seed32PrivateProof, deserialize_seed32_private_proof, prove_seed32_private,
+    prove_seed32_private_with_settings, serialize_seed32_private_proof,
+    verify_seed32_private_proof, verify_seed32_private_proof_with_settings,
+};
 pub use prove_verify::{
     prove_message, prove_message_with_settings, prove_single_block,
     prove_single_block_with_settings, verify_message_proof, verify_message_proof_with_settings,
     verify_single_block_proof, verify_single_block_proof_with_settings,
 };
+
 pub use serialization::{
     deserialize_message_instance, deserialize_multi_block_proof, deserialize_single_block_instance,
     deserialize_single_block_proof, serialize_message_instance, serialize_multi_block_proof,
